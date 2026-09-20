@@ -27,7 +27,7 @@ import { PromptEditor } from './components/prompt-editor.ts'
 import type { Agent, AgentHandle, AgentStatus, ModelSelection, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
 import { CombinedAutocompleteProvider, type AutocompleteItem, type SlashCommand } from '@earendil-works/pi-tui'
-import { createUserMessage, errorChain, type ToolCallId, type ContentBlock, type LlmConfigurableProvider, type LlmReasoningEffortInfo } from '@deepseek-ai/dsh-llm'
+import { assembleAssistantStream, createUserMessage, errorChain, type ToolCallId, type ContentBlock, type LlmConfigurableProvider, type LlmReasoningEffortInfo } from '@deepseek-ai/dsh-llm'
 import type { EncodedImageAttachment } from '@deepseek-ai/dsh-attachment'
 import { SessionId, SessionLogOffset, type Session, type SessionEvent, type UserMessage } from '@deepseek-ai/dsh-session'
 import { scopeOf } from '@deepseek-ai/dsh-scope'
@@ -885,6 +885,15 @@ export class Tui extends Service {
 
     // --- transcript ---------------------------------------------------------
     const assistantStream = new AssistantStreamController(chat, palette, mdTheme)
+    ctx.on('agent/assistant-stream', ({ agent: candidate, frame }) => {
+      if (candidate !== agent) return
+      if (frame.type === 'start') assistantStream.start(showReasoning)
+      else if (frame.type === 'chunk') {
+        activeRetry = undefined
+        assistantStream.update(frame.chunk)
+      } else if (frame.outcome.kind === 'abandoned') assistantStream.end()
+      ui.requestRender()
+    })
     const toolCards = new Map<ToolCallId, ToolCardComponent>()
     const toolArguments = new Map<ToolCallId, unknown>()
     const toolNames = new Map<ToolCallId, string>()
@@ -994,9 +1003,9 @@ export class Tui extends Service {
             refreshActivity()
           }
           break
-        case 'assistant/chunk':
-          activeRetry = undefined
-          assistantStream.update(event.data.chunk)
+        case 'assistant/attempt':
+          assistantStream.settle(assembleAssistantStream(event.data.stream).blocks())
+          assistantStream.start(showReasoning)
           break
         case 'assistant/message':
           assistantStream.settle(event.data.message.content)
@@ -1040,7 +1049,7 @@ export class Tui extends Service {
           }
           break
         }
-        case 'tool/code-dispatch-start': {
+        case 'tool/ptc-dispatch-start': {
           const args = event.data.arguments
           const card = new ToolCardComponent(
             event.data.name,
@@ -1058,7 +1067,7 @@ export class Tui extends Service {
           else parent.addSubCall(card)
           break
         }
-        case 'tool/code-dispatch': {
+        case 'tool/ptc-dispatch': {
           const args = event.data.arguments
           let card = toolCards.get(event.data.subCallId)
           if (card === undefined) {
@@ -1489,9 +1498,7 @@ export class Tui extends Service {
           return
         }
         try {
-          // A blank session was never materialized by the persistence gate, so
-          // agent-loop's strict config resume would fail; recreate its exact id
-          // fresh instead.
+          // Recreate blank sessions; only conversations need a persisted resume.
           writeReloadHandoff(handoffPath, {
             args: nextGenerationArgs(
               ctx.get('cmdlineArgs')?.get() ?? [],
@@ -3112,7 +3119,7 @@ export class Tui extends Service {
       const execution = await ctx.commands.execute(
         current,
         line,
-        images,
+        images.map(image => ({ type: 'image' as const, ...image })),
         new AbortController().signal,
       )
       if (execution === undefined) {
@@ -3281,7 +3288,7 @@ export class Tui extends Service {
       if (trimmed.startsWith('/')) {
         const commandName = /^\/([^\s]+)/u.exec(trimmed)?.[1] ?? ''
         const command = commandName === '' ? undefined : ctx.commands.find(current, commandName)
-        if (submission.images.length > 0 && command?.input?.images !== true) {
+        if (submission.images.length > 0 && command?.input?.attachments !== true) {
           restoreSubmission()
           appendNotice(t('noticeImageCommandUnsupported', { name: commandName }), 'warning')
           return
@@ -3989,7 +3996,7 @@ export class Tui extends Service {
       })
 
       // Compose fresh sessions from the selected mode without recording an
-      // event yet. The persistence gate buffers setup metadata, and the actual
+      // event yet. DSH owns persistence, and the actual
       // preset selection is logged immediately before the first user message.
       async function composeAgentPreset(target: Agent): Promise<void> {
         const presets = ctx.agentPresets
@@ -4233,11 +4240,8 @@ export class Tui extends Service {
           resumeSessionId: targetId,
           agentOptions: current.options,
           signal: controller.signal,
-          setup: presets === undefined ? undefined : async (agentCtx) => {
-            const resumed = agentCtx.agent
-            const recorded = resumed === undefined
-              ? undefined
-              : ctx.sessionProjections.stateOf(resumed.session, 'agentPreset') ?? undefined
+          setup: presets === undefined ? undefined : async (agentCtx, resumed) => {
+            const recorded = ctx.sessionProjections.stateOf(resumed.session, 'agentPreset') ?? undefined
             if (recorded !== undefined) await presets.mount(agentCtx, recorded)
           },
         })

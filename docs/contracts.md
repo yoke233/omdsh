@@ -1,6 +1,6 @@
 # @yoke233/omdsh 合约速查表（contracts.md）
 
-> dsh 0.1.2-rc.1 唯一真相源。类型文本逐字引自 npm 安装包
+> dsh 0.1.6-alpha.2 唯一真相源。类型文本逐字引自 npm 安装包
 > `@deepseek-ai/*/lib/types/*.d.ts`。本文件是 TUI bundle 消费 harness 服务的地图；
 > 上游接口变更时先更新本表再改代码。
 > 包根：`node_modules/@deepseek-ai`（本仓库 pnpm 安装）与全局 dsh 安装目录中的 `node_modules/@deepseek-ai`
@@ -19,13 +19,13 @@ export interface SessionEventMap {
   'step/start': { turn: number; step: number };
   'step/end': { turn: number; step: number };
   'user/message': UserMessage;           // 直接人类提示 / 注入上下文 / goal 续轮；data.source 区分
-  'assistant/chunk': { turn: number; step: number; chunk: StreamChunk };
-  'assistant/message': { turn: number; step: number; message: AssistantMessage; usage?: TokenUsage; interrupted?: true };
+  'assistant/attempt': { turn: number; step: number; stream: AssistantStreamRecord[] }; // 无 surface 消息的已结算尝试
+  'assistant/message': { turn: number; step: number; message: AssistantMessage; stream: AssistantStreamRecord[]; usage?: TokenUsage; interrupted?: true };
   'tool/call': { turn: number; step: number; callId: ToolCallId; name: string; arguments: string };
   'tool/result': { turn: number; step: number; message: ToolResultMessage; error?: { name: string; code: string }; meta?: JsonValue };
   // dsh-tool-todo 合并 'todo/write'；整表快照，后写覆盖，仅 UI 状态，不进派生历史
-  'tool/code-dispatch-start': PtcDispatchStartEventData; // REPL/PTC nested call starts
-  'tool/code-dispatch': CodeDispatchEventData;            // matching nested call settlement
+  'tool/ptc-dispatch-start': PtcDispatchStartEventData; // REPL/PTC nested call starts
+  'tool/ptc-dispatch': PtcDispatchEventData;            // matching nested call settlement
   'request/header': { header: EpochHeader; reason: RequestHeaderReason };
   'request/context': RequestContext;
   'session/end-seed': Record<string, never>;
@@ -87,11 +87,11 @@ export type SessionEvent<T extends SessionEventType = SessionEventType> = {
 }[T];
 ```
 
-- SurfaceEventType = `'user/message' | 'assistant/message' | 'tool/result'`（唯一可上模型可见面的三类）
-- SurfaceOp = `'append' | { op: 'replace'; start: number; end: number }`（compaction 用 replace 删除被遮蔽节点）
+- SurfaceEventType = `'system/message' | 'user/message' | 'assistant/message' | 'tool/result'`。
+- SurfaceOp = `'append' | { op: 'replace'; startSeq: number; endSeq: number }`（compaction 用 replace 删除被遮蔽节点）
 - 派生历史 = 按 surfaceOp 顺序走 surface 节点投影（`Session.deriveMessages()`）
 
-人类 transcript 必须注意首步事件顺序：`turn/start → step/start → user/message* → assistant/chunk* → assistant/message`。
+人类 transcript 必须注意首步事件顺序：`turn/start → step/start → user/message* → agent/assistant-stream(chunk)* → assistant/message`。
 因此不能在 `step/start` 时把空助手组件插入视图；应在首个 assistant payload 到达时再挂载，否则助手输出会排到本轮用户输入之前。
 
 ### 1.4 Session（活会话）
@@ -101,7 +101,7 @@ class Session {
   readonly header: SessionHeader;      // 创建元数据（version/cwd/lineage/seedLength/createdAt）
   get id(): SessionId;
   readonly firstLiveSeq: number;       // 本进程首个 seq（种子长度）
-  get events(): readonly SessionEvent[];  // 深冻结不可变快照
+  snapshotEvents(): readonly SessionEvent[];  // 深冻结不可变快照
   get seq(): number;
   get surface(): SessionSurface;
   append<T>(type: T, data: SessionEventMap[T], ...opts: T extends SurfaceEventType ? [SurfaceIntent] : []): SessionEvent<T>;
@@ -202,6 +202,8 @@ export interface AgentHandle { agent: Agent; dispose(): Promise<void>; }
 - `CreateAgentOptions`: `{ sessionId, meta?: { cwd?, parentSession?, seedLength?, origin?, delegationDepth?, agentPreset? }, seed?, agentOptions?, signal?, setup? }`
 - `ResumeAgentOptions`: `{ resumeSessionId, agentOptions?, signal?, setup? }`（内部先 `ctx.sessionPersistence.prepare`）
 
+Agent setup 使用 `(agentCtx, agent)` 的第二个参数读取正在创建的 Agent；不再读取 `agentCtx.agent`。
+
 ### 2.3 模型选择
 
 ```ts
@@ -215,6 +217,7 @@ export declare function installModelSelection(agentCtx: Context, selection: Mode
 | 事件 | 载荷 | TUI 用途 |
 |---|---|---|
 | `agent/created` / `agent/disposed` | `{ agent }` | 生命周期 |
+| `agent/assistant-stream` | `{ agent, frame }`，frame 为 start/chunk/end | 仅实时流式渲染；按当前 Agent 过滤，chunk 不再持久化为独立事件 |
 | `agent/status` | `{ agent, status }` | **编辑框/指示器状态切换（idle/running）** |
 | `agent/inbox/inserted` / `claimed` / `discarded` | `{ agent, message, turn? }` | 队列显示 |
 | `agent/session-start` | `{ agent, source: 'startup'\|'resume'\|'clear'\|'compact' }` | 首轮前通知 |
@@ -444,38 +447,32 @@ tool-todo、tool-goal、tool-ralph、tool-str-replace-editor、repeat-tool-remin
 
 ---
 
-## 6. 会话持久化/投影/查询（0.1.2-rc.1 合约）
+## 6. 会话持久化/投影/查询（0.1.6-alpha.2 合约）
 
 ### 6.1 SessionPersistence（`ctx.sessionPersistence`，抽象服务）
 
+新版存储以单个 SessionHandle 管理读写与单写者所有权：
+
 ```ts
 abstract class SessionPersistence extends Service {
-  abstract locate(meta: SessionHeader): SessionLocation | undefined;
-  abstract readonly supportsRawArtifacts: boolean;
-  readRaw(_id, signal?): Promise<SessionRawArtifact | undefined>;
-  abstract create(meta: SessionHeader): Promise<void>;
-  abstract append(id, events): Promise<void>;
-  prepare(id, signal?): Promise<SessionPreparation>;   // resume 专用排他预留
-  abstract load(id): Promise<SessionInspection>;        // 冷恢复：合成 tool/result+step/end+turn/end{interrupted}
-  abstract inspect(id, signal?): Promise<SessionInspection>;
-  abstract readFrom(id, fromSeq, signal?): Promise<{ meta; events }>;  // watermark 原语
-  abstract list(signal?): Promise<SessionHeader[]>;
-  abstract listSnapshots(signal?): Promise<SessionPersistenceSnapshot[]>;
+  abstract create(header, options?): Promise<SessionHandle>;
+  abstract open(id, access: 'read' | 'write', options?): Promise<SessionHandle>;
+  abstract flush(): Promise<void>;
+  abstract stat(id, options?): Promise<SessionPersistenceSnapshot | undefined>;
+  abstract list(options?): Promise<readonly SessionPersistenceSnapshot[]>;
+}
+interface SessionHandle {
+  readonly id; readonly header; readonly inheritedEventCount; readonly access;
+  read(offset?, length?, options?): Promise<{ events; eventState }>;
+  append(events, options?): Promise<void>;
+  flush(options?): Promise<void>;
+  close(): Promise<void>;
 }
 ```
 
-JSONL 具体后端另暴露给同 Profile 包装层的稳定读取原语：
-
-```ts
-loadStored(id, signal?): Promise<StoredPrefix | undefined>;
-readStoredRevision(id, signal?): Promise<SessionPersistenceRevision | undefined>;
-// StoredPrefix = { meta, inheritedEventCount, events, revision, tornMarker? }
-```
-
-`session-persistence-conversation-gate` 仍不放宽上游连续性校验。它只在 `loadStored` 抛出精确的 committed-region
-`seq gap` 错误时，使用 `readRaw` + 前后相同的 `readStoredRevision` 重读稳定快照；仅允许发生在 `turn/end` 后的
-小型前向缺口（最多 8 处、合计 64 个序号），并在内存中填入带 `ignorable: true` 的
-`omdsh/legacy-sequence-gap` 标记。物理日志不改写，后续追加沿用原序号空间；回合内部、逆向或超限缺口继续失败。
+TUI 不再拦截已撤销的 appendBatch/loadStored/readRaw 接口，也不修补历史日志或延迟元数据写入。
+创建、持久化、旧格式读取和恢复均由 DSH 负责；空白会话仍由会话列表的对话过滤规则隐藏。
+独立的 llm-tool-call-sanitizer 仅保留 LLM 流中空 tool-call id/name 的规范化，不触及持久化。
 
 ### 6.2 SessionProjectionRegistry（`ctx.sessionProjections`）
 
@@ -542,10 +539,10 @@ class CommandRuntime extends Service {
   register(definition: CommandDefinition): () => void;   // { name, description, input?, recordInput?, handler }
   list(agent: Agent): readonly CommandDescriptor[];
   find(agent: Agent, name): CommandDefinition | undefined;
-  execute(agent, line, images: readonly EncodedImageAttachment[], signal): Promise<CommandExecution | undefined>; // 语法/未知名 → undefined 不记日志
+  execute(agent, line, attachments: readonly CommandSubmitAttachment[], signal): Promise<CommandExecution | undefined>; // 语法/未知名 → undefined 不记日志
 }
 parseCommand(line: string): ParsedCommand | undefined;
-// CommandInputDescriptor.images?: boolean；未声明图片输入的命令必须拒绝附件。
+// CommandInputDescriptor.attachments?: boolean；未声明图片输入的命令必须拒绝附件。
 // CommandInvocation.attachments 为执行器已持久化的 readonly ImageBlock[]，由 handler 决定如何使用。
 // SessionEvent：'command/run' { commandId, name, args?, source } / 'command/done' { commandId, kind, text?, sourceEventSeq? }
 // CommandResult: { kind:'success', text?, sourceEventSeq? } | { kind:'error', text }
@@ -579,8 +576,8 @@ measure(session, requestHeader?): TokenMeasurement;  // { totalTokens, surfaceTo
 ### 7.5 dsh-system-prompt（`ctx.systemPrompt`）
 
 ```ts
-// Config: { includeHarnessIdentity?, includeRuntimeContext?, persona?, toolOrder? }
-// persona → order-0 'deployment:persona' section；agent-scoped 同名 section 遮蔽全局
+// Config: { includeHarnessIdentity?, includeRuntimeContext?, personaPrefix?, personaSuffix?, toolOrder? }
+// personaPrefix → 'deployment:persona-prefix'; personaSuffix → 'deployment:persona-suffix'；agent-scoped 同名 section 遮蔽全局
 renderPrompt(assembly: PromptAssembly): string;   // 严格 {{variable}} 插值
 ```
 
@@ -686,7 +683,7 @@ interface Config {
 - `agent-default-model`：`{ provider: string (req), model: string (req) }`；settings 分节另有 `reasoningEffort?`
 - `agent-instructions`：`maxBytes` 必填；其余可选（projectRootMarkers 默认 ['.git']、candidates [AGENTS.md, CLAUDE.md]…）
 - `tools`：`{ mode?: 'native'|'ptc'|'both' (default native), maxParallelSubCalls?: number (default 10) }`
-- `system-prompt`：`{ persona?, toolOrder?, includeHarnessIdentity?, includeRuntimeContext? }`
+- `system-prompt`：`{ personaPrefix?, personaSuffix?, toolOrder?, includeHarnessIdentity?, includeRuntimeContext? }`
 - `fs-sandbox`：`{ cwd }`（workspace 根）
 - `approval`：`{ policy?: 'ask'|'never' }`（默认 `ask`；交互前端需注册 `approval/request` answerer）
 - `llm-deepseek`：`{ apiKeyEnv?, baseURL?, thinking?, reasoningEffort?, maxRequestImageBytes? }`；`reasoningEffort` 支持 `off | low | high | max`；`models[]` 可声明 `inputModalities: ['text'] | ['text','image']`（settings 分节 llm-deepseek 可热覆盖）
@@ -698,13 +695,13 @@ interface Config {
 
 1. **启动**：`tui-startup` 行 inject `cmdlineArgs`，commander 解析 `--resume`/`--session`/`--help` → 提供 `tuiStartup`（sessionId / resumeSessionId）；agent-loop 行 `inject: [tuiStartup]` 惰性读。
 2. **取 agent**：`ctx.agents.get(sessionId)` → `Agent`；`agent.session.events` 为不可变日志快照。
-3. **渲染主通道**：`session/event` 事件（追加后馈送）+ 初始 `agent.session.events` 重放（种子不发出）；`tool/code-dispatch-start` / `tool/code-dispatch` 按 parent/sub-call id 组成递归工具卡，与 Web 的 `subCalls` contract 一致。
+3. **渲染主通道**：`session/event` 持久事件 + `agent/assistant-stream` 实时输出 + `agent.session.snapshotEvents()` 历史重放；`tool/ptc-dispatch-start` / `tool/ptc-dispatch` 按 parent/sub-call id 组成递归工具卡，与 Web 的 `subCalls` contract 一致。
 4. **状态**：`agent/status` 事件 → 编辑框边框/指示器；`agent.session.header.cwd` 为 workspace。
 5. **提交输入**：编辑框消息统一调用 `agent.steer(createUserMessage({ content, source: { kind: 'user' } }))`；剪贴板图片在草稿中只保留内存字节与 `[Image #N]` 标记，提交时先由 `ctx.attachments.saveImages` 持久化仍保留标记的图片，再把 durable image block 加入 `content`。idle 时立即在 transcript 乐观渲染普通用户消息并按 message id 等待正式事件确认，不显示 steer 待处理投影；running 时由最近的下一 step 领取，并将 `agent/inbox/inserted` 投影到 Steering 面板。正式 `user/message` 到达后，idle 乐观消息只确认去重，running 预览则按 message id 移除并进入 transcript；`discarded` 或未接纳 turn 结束时同步清理。Alt+Up 合并 `inbox.nextStep`/`nextTurn` 中可编辑的直接用户文本到当前草稿，并通过 `inbox.remove(message.id)` 逐条撤回原队列项。 运行中输入框非空时 Ctrl+C 只清空草稿；空输入框 Ctrl+C 或任意草稿状态的 Esc 在调用 `agent.cancel` 前，先将全部可编辑 Steering 消息按队列顺序合并回输入框并从 inbox 移除，避免取消时丢失或重复投递。
 6. **中断**：`agent.cancel({ kind: 'user' })`。
 7. **提问**：监听 agent-scope `user-questions/request` waterfall；对话框完成后返回 `AskUserQuestionAnswer`，不认领的请求调用 `next()`。
 8. **授权**：监听 waterfall `approval/request`；只认领当前前台 agent，弹框返回 `allowed-once`/`rejected`，中止返回 `cancelled`，其他 agent 调用 `next()`。
-9. **命令**：`ctx.commands.execute(agent, line, images, signal)`；普通命令传 `[]`，带图片标记的草稿仅在命令声明 `input.images` 时传入 base64 wire batch，否则前端拒绝提交并保留草稿。`/help` 列表用 `ctx.commands.list(agent)`。
+9. **命令**：`ctx.commands.execute(agent, line, attachments, signal)`；普通命令传 `[]`，带图片标记的草稿仅在命令声明 `input.attachments` 时传入带 `type: 'image'` 的 base64 wire batch，否则前端拒绝提交并保留草稿。`/help` 列表用 `ctx.commands.list(agent)`。
 10. **模型选择**：`installModelSelection(agent.ctx, selectionRef)` + `agentDefaultModel.currentSelection()/saveSelection()`。
 11. **投影消费**：`ctx.sessionProjections.snapshot(session)` 或 `sessionProjectionCache.cachedSnapshot(header)`（列表零 I/O）。
 12. **Profile 与 TUI 代码重载（暂时关闭）**：当前 bundle 将 `tui-reload` Profile 行标记为 disabled，TUI 不注入 `tuiReload`，也不提供 `/reload` 命令、帮助项或补全项。`src/reload.ts`、包导出与专项测试仅作为未启用的调查 WIP 保留，不能视为运行时能力；恢复前必须先解决 `docs/RELOAD_ISSUE.md` 记录的 generation 与私有 HMR 边界，并重新完成 Loader 与 ConPTY 验收。

@@ -19,6 +19,8 @@
 > [!IMPORTANT]
 > 推荐通过 **`omdsh` 启动器**使用本插件：它自动安装/升级 profile，并作为 `/reload` 的监督进程，让插件更新无需退出终端即可生效。dsh 本身仍处于 developer preview，建议固定宿主版本与插件 release。遇到问题请提交 [Issue](https://github.com/yoke233/omdsh/issues)。
 
+当前依赖基线为 DSH `0.1.6-alpha.2`。会话存储与格式恢复完全交由 DSH 管理；不再挂载旧的存储写入拦截和日志修补插件。
+
 ## 为什么使用它
 
 | 能力 | 你会得到什么 |
@@ -31,7 +33,7 @@
 | **响应式布局** | 窄终端自动压缩次要信息，优先保留模式、目录、Git 与上下文用量 |
 | **微信远程桥** | 通过官方 ClawBot / iLink 通道发送任务、查看进度并接收结果 |
 
-界面支持斜杠命令、路径与参数补全、会话/文件引用、可折叠工具卡、思考块、上下文卡以及审批对话框。`repl` / `run_code` 内部工具通过 dsh 官方 Code Dispatch 事件递归显示；`apply_patch` 与 `edit` 复用标准 diff presentation，不使用 TUI 私有协议。
+界面支持斜杠命令、路径与参数补全、会话/文件引用、可折叠工具卡、思考块、上下文卡以及审批对话框。`repl` / `run_code` 内部工具通过 dsh 官方 PTC Dispatch 事件递归显示；`apply_patch` 与 `edit` 复用标准 diff presentation，不使用 TUI 私有协议。
 
 <details>
 <summary><strong>查看完整帮助面板</strong></summary>

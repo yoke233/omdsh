@@ -64,7 +64,7 @@ export async function run(tui) {
       "    if (event.type !== 'user/message') return",
       "    const text = event.data.content.filter(block => block.type === 'text').map(block => block.text).join('')",
       "    if (!text.includes('STEER_EDIT_ONE') || !text.includes('STEER_EDIT_TWO')) return",
-      "    const turn = session.events.findLast(item => item.type === 'turn/start')?.data.turn",
+      "    const turn = session.snapshotEvents().findLast(item => item.type === 'turn/start')?.data.turn",
       "    writeFileSync(join(process.env.DSH_HOME, 'steer-message-turn'), String(turn))",
       '  })',
       '}',
