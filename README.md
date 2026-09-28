@@ -61,7 +61,7 @@
 
 ```sh
 npm install --global pnpm@11.25.0 @deepseek-ai/dsh@0.1.7-rc.2
-npm install --global @yoke233/omdsh
+npm install --global --legacy-peer-deps @yoke233/omdsh
 ```
 
 之后无需手工初始化 profile：`omdsh` 首次运行会自动安装或迁移 `tui` profile；`omdsh update` 可随时从 GitHub 最新 Release 下载、校验并安装 bundle。release tarball 已包含构建后的 `lib/`，用户机器无需编译。

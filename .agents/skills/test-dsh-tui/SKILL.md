@@ -76,6 +76,8 @@ The `reload` and `reload-code` scenarios are retained only as historical fixture
 
 Run `--scenario settings-migration` after changing legacy settings import, native settings writes, or volatile TUI configuration. It checks the migrated prompt on the current screen, switches between `minimal` and `standard`, persists a theme change, and reads the migrated title model in `/settings` without replacing the DSH process.
 
+Run `--scenario prime-repl` with packed `dsh-prime-agent` and `dsh-tool-monitor` supplied through `--extra-bundle` when changing their TUI integration. It restores the legacy Prime default, switches presets while the session is empty, and checks that a real REPL binding survives two controlled-model turns. Additional bundles such as Codex auth can join the same run; no external model request is made.
+
 Run the network-free, controlled-model scenario for running-turn input, immediate preview, and steer delivery:
 
 ```powershell

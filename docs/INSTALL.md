@@ -5,12 +5,12 @@
 全局安装 tarball 只用于安装 `omdsh` 启动器；它不会单独提供 dsh runtime。
 
 ## 全局安装启动器
-首选从 npm 安装作用域包。包内的 dsh 宿主 peer 依赖已标记为 optional；启动器仍要求系统 PATH 中存在官方 `dsh`。
+首选从 npm 安装作用域包，并保留 `--legacy-peer-deps`，禁止 npm 自动安装宿主 peer。宿主服务由官方 `dsh` 提供；仅将直接 peer 标为 optional 无法阻止 npm 安装传递 peer，复制 `settings`、`app-boot` 等宿主服务会使配置保存失败。启动器仍要求系统 PATH 中存在官方 `dsh`。
 
 ```sh
-npm install --global @yoke233/omdsh
+npm install --global --legacy-peer-deps @yoke233/omdsh
 # 或安装下载到本地的 GitHub Release：
-npm install --global ./yoke233-omdsh-0.6.9.tgz
+npm install --global --legacy-peer-deps ./yoke233-omdsh-0.6.9.tgz
 ```
 
 随后安装官方 dsh（若尚未安装），再运行启动器：
@@ -153,8 +153,11 @@ dsh plugin --profile tui add \
 
 如果系统中已经全局安装 `@yoke233/omdsh`，本地 tarball 升级必须把**同一个 tarball**同时安装到全局和 `tui` Profile。DSH 解析 bundle 时会先检查宿主 installation anchor；只更新 Profile 可能继续加载全局旧 bundle：
 
+先卸载旧全局启动器以清理其私有 peer 副本；此操作不删除 `~/.dsh` 中的 Profile、设置、会话或凭据。
+
 ```sh
-npm install --global ./yoke233-omdsh-0.6.9.tgz
+npm uninstall --global @yoke233/omdsh
+npm install --global --legacy-peer-deps ./yoke233-omdsh-0.6.9.tgz
 dsh plugin --profile tui add ./yoke233-omdsh-0.6.9.tgz
 ```
 
@@ -172,7 +175,7 @@ dsh plugin --profile tui update @yoke233/omdsh
 
 ```sh
 npm uninstall --global dsh-omp-tui
-npm install --global @yoke233/omdsh
+npm install --global --legacy-peer-deps @yoke233/omdsh
 omdsh
 ```
 
