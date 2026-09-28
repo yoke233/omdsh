@@ -19,7 +19,7 @@
 > [!IMPORTANT]
 > 推荐通过 **`omdsh` 启动器**使用本插件：它自动安装/升级 profile，并作为 `/reload` 的监督进程，让插件更新无需退出终端即可生效。dsh 本身仍处于 developer preview，建议固定宿主版本与插件 release。遇到问题请提交 [Issue](https://github.com/yoke233/omdsh/issues)。
 
-当前依赖基线为 DSH `0.1.6-alpha.2`。会话存储与格式恢复完全交由 DSH 管理；不再挂载旧的存储写入拦截和日志修补插件。
+当前依赖基线为 DSH `0.1.7-rc.2`。Bundle 使用新版声明式 agent preset registry，并随包提供 standard、ptc、minimal 与 cordis 四套官方 composition；会话存储与格式恢复完全交由 DSH 管理。
 
 ## 为什么使用它
 
@@ -51,8 +51,8 @@
 ### 环境要求
 
 - Node.js `^22.19.0` 或 `>=24.0.0`
-- pnpm 11（仓库锁定 `11.7.0`）
-- dsh `0.1.2-alpha.2`
+- pnpm 11（仓库锁定 `11.25.0`）
+- dsh `0.1.7-rc.2`
 - 推荐 truecolor 终端；Nerd Font 用于完整图标显示
 
 ### 1. 安装（推荐：omdsh）
@@ -60,7 +60,7 @@
 安装官方 dsh、pnpm 与 `omdsh`（全局安装后命令即在 PATH 中）：
 
 ```sh
-npm install --global pnpm@11.7.0 @deepseek-ai/dsh@0.1.2-alpha.2
+npm install --global pnpm@11.25.0 @deepseek-ai/dsh@0.1.7-rc.2
 npm install --global @yoke233/omdsh
 ```
 
@@ -70,8 +70,8 @@ npm install --global @yoke233/omdsh
 <summary>手工安装到 profile（不经 omdsh）</summary>
 
 ```sh
-npx --yes @deepseek-ai/dsh@0.1.2-alpha.2 plugin --profile tui add \
-  https://github.com/yoke233/omdsh/releases/download/v0.6.0/yoke233-omdsh-0.6.0.tgz
+npx --yes @deepseek-ai/dsh@0.1.7-rc.2 plugin --profile tui add \
+  https://github.com/yoke233/omdsh/releases/download/v0.6.9/yoke233-omdsh-0.6.9.tgz
 ```
 
 </details>
@@ -181,9 +181,10 @@ dsh --profile tui --dump-config
 ```yaml
 - id: tui
   config:
-    mode: standard              # ctx.agentPresets roster 中的 preset id
     locale: zh-CN               # zh-CN | en
     defaultReasoningEffort: max
+    keyTools: ctrl+o
+    keyReasoning: ctrl+r
     theme:
       mode: dynamic             # dynamic | selected
       dark: dark-catppuccin
@@ -196,10 +197,10 @@ dsh --profile tui --dump-config
 
 需要注意：
 
-- `mode` 只对空白会话生效；恢复会话时沿用日志中的模式。
+- `/settings` 的默认模式写入 `agent-preset-registry.selectedDefault`；恢复会话时沿用日志中的模式。
 - `dynamic` 根据终端明暗在 `dark` / `light` 槽位间切换；`selected` 固定使用 `selected`。
 - `theme.custom` 只接受 RGB 三元组；未知角色或非法值会被忽略。
-- 官方 settings provider 存在时，界面选择会写入 `$DSH_HOME/settings.yaml`。
+- 界面设置通过 DSH settings forms 写回当前 profile 的 `cordis.patch.yml`。
 - `/permission` 的选项来自当前部署，用户自定义 preset 也会进入提示与补全。
 
 ## `omdsh` 启动器与 `/reload`

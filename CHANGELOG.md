@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- 升级宿主基线至 DSH 0.1.7-rc.2，并同步 Cordis 4.0.4 与 Schemastery 3.18.4。
+- 迁移到声明式 agent preset registry，随 bundle 提供 standard、ptc、minimal 与 cordis composition，并保留会话模式选择和默认设置。
+- 设置持久化改用 DSH profile-backed settings forms；首次升级会把旧版平铺主题、标题模型及 `agent-presets.default` 一次性迁移到原生 Profile 配置。
+- HMR 配置监听迁移到 `dsh-hmr`；`dsh-settings`、plugin manager 与 preset registry 作为宿主单例 peer 使用，避免 Profile 安装重复实例。
+
 ## [0.6.9] - 2026-09-20
 
 - 升级 DSH 依赖至 0.1.6-alpha.2，适配 PTC runtime、嵌套调用事件、Agent 流式输出及命令附件契约。

@@ -116,7 +116,7 @@ describe('composer steer projection', () => {
     })
     const plugin = createUserMessage({
       content: [{ type: 'text', text: '插件上下文' }],
-      source: { kind: 'plugin', plugin: 'fixture' },
+      source: { kind: 'system-prompt' },
     })
 
     panel.sync([plugin, direct])

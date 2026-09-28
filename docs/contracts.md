@@ -1,6 +1,6 @@
 # @yoke233/omdsh 合约速查表（contracts.md）
 
-> dsh 0.1.6-alpha.2 唯一真相源。类型文本逐字引自 npm 安装包
+> dsh 0.1.7-rc.2 唯一真相源。类型文本逐字引自 npm 安装包
 > `@deepseek-ai/*/lib/types/*.d.ts`。本文件是 TUI bundle 消费 harness 服务的地图；
 > 上游接口变更时先更新本表再改代码。
 > 包根：`node_modules/@deepseek-ai`（本仓库 pnpm 安装）与全局 dsh 安装目录中的 `node_modules/@deepseek-ai`
@@ -212,7 +212,26 @@ export interface ModelSelectionRef { current: ModelSelection | undefined; assemb
 export declare function installModelSelection(agentCtx: Context, selection: ModelSelectionRef): () => void;
 ```
 
-### 2.4 cordis 事件（dsh-agent）
+### 2.4 Agent preset（`@deepseek-ai/dsh-agent-preset-registry`）
+
+`ctx.agentPresets` 由 registry 服务提供；`@deepseek-ai/dsh-agent-preset`
+声明一套 composition。Bundle 分别挂载 registry 与四个声明行。
+
+```ts
+class AgentPresetRegistry {
+  get defaultId(): string;
+  list(): Promise<AgentPreset[]>;
+  mount(ctx: Context, id?: string): Promise<AgentPreset>;
+  recompose(ctx: Context, id: string): Promise<AgentPreset>;
+  composedPreset(ctx: Context): string | undefined;
+  select(agent: Agent, agentPreset: string): Promise<string>;
+}
+```
+
+`agent-preset/selected` 事件与 `agentPreset` projection 也由 registry 包声明。创建
+header 保存初始 preset；空会话切换后追加 selection 事件，恢复时必须读取 projection。
+
+### 2.5 cordis 事件（dsh-agent）
 
 | 事件 | 载荷 | TUI 用途 |
 |---|---|---|
@@ -339,22 +358,23 @@ export interface TextBlock { type: 'text'; text: string; }
 export interface ReasoningBlock { type: 'reasoning'; text: string; }
 export interface ImageBlock { type: 'image'; attachment: ImageAttachmentRef; }
 export interface ToolCallBlock { type: 'tool-call'; id: ToolCallId; name: string; arguments: string; }
-export interface ToolResultBlock { type: 'tool-result'; toolCallId: ToolCallId; content: ContentBlock[]; isError?: boolean; }
 export type ContentBlock = ContentBlockMap[ContentBlockType];   // 按 type 判别
 ```
 
 ### 5.2 消息
 
 ```ts
-export interface Message {
+export interface MessageBase {
   readonly id: MessageId;
-  readonly role: 'system' | 'user' | 'assistant';
-  readonly content: ContentBlock[];
-  readonly source: MessageSource;    // user {kind:'user'} | plugin {kind:'plugin',plugin,...form} | model | tool
+  readonly content: readonly ContentBlock[];
+  readonly source: MessageSource;
 }
-export interface UserMessage extends Message { readonly role: 'user'; }
-export interface AssistantMessage extends Message { readonly role: 'assistant'; readonly source: ModelMessageSource; }
-export interface ToolResultMessage extends Message { readonly role: 'user'; readonly content: [ToolResultBlock]; readonly source: ToolMessageSource; }
+export interface UserMessage extends MessageBase { readonly role: 'user'; }
+export interface AssistantMessage extends MessageBase { readonly role: 'assistant'; readonly source: ModelMessageSource; }
+export interface ToolResultMessage extends MessageBase {
+  readonly role: 'tool'; readonly toolCallId: ToolCallId; readonly isError: boolean;
+}
+export type Message = UserMessage | AssistantMessage | ToolResultMessage;
 export declare function createUserMessage<T extends NewUserMessage>(input: T & {...}): T & Pick<UserMessage, 'id'|'role'>;
 ```
 
@@ -420,25 +440,18 @@ class AttachmentStore extends Service { // ctx.attachments
 
 ## 9. dsh-base 默认行清单（bundle 层参考）
 
-`$PKG/dsh-base/cordis.patch.yml`（一行 insert）已挂载：timer、hmr、llm、session、typert 三件套、
-session-title(+llm)、user-questions、agent、agent-default-model、jobs、llm-retry、settings、
-credentials、llm-pi-ai、session-persistence-jsonl（root=`dshHomePath('sessions')`）、attachment-local、
-session-query-sqlite（path `:memory:`、openAt `never`）、session-projection、session-telemetry-otel、
-storage、storage-json（root=`dshHomePath('storages')`）、storage-domain（backend `json`）、
-session-projection-cache（writeEveryEvents `200`、writeIntervalMs `5000`）、
-subprocess、sandbox、sandbox-policy（mode `workspace-write`，workspaceRoot=process.cwd()）、
-bash-sandbox（win32 禁用）、pwsh-sandbox（仅 win32）、approval、permission、shell-env、
-tool-bash（win32 禁用）、tool-pwsh（仅 win32）、tool-pwsh-persistent（仅 win32）、tool-jobs、fs-observation-policy、tool-fs、
-tool-fs-search、agent-instructions、skill、skill-filesystem、skill-badge（disabled）、tool-skill、
-commands、command-feedback、goal、goal-round-driver、command-goal、plan-mode、token-meter、
-compaction-basic、command-compact、subagent 三件套、tool-subagent-control(+list-agents)、
-tool-subagent、tool-subagent-fork、tool-subagent-report、workflow、tool-workflow、timeout-policy、
-spill-local、spill-policy（maxInlineBytes 50000）、session-checkpoint-policy、tool-result-pruner、
-tool-todo、tool-goal、tool-ralph、tool-str-replace-editor、repeat-tool-reminder、web_search 系列。
+DSH 0.1.7-rc.2 的 `dsh-base` 在 host plane 挂载共享 registry、持久化、投影、
+settings、凭据、sandbox、jobs、goal、skill、subagent、token meter 与网络后端。它也保留
+单会话 profile 可直接使用的 agent 可见工具与 prompt contributor 行。
 
-→ TUI bundle 的 patch 只需**覆盖** `agent-loop`/`system-prompt`/`llm-deepseek`/`fs-sandbox`/`tools`
-行 + **插入** session-reference/tmux-context/tui 行。storage 三件套与 session-projection-cache
-由 0.1.2-rc.1 的官方 base 提供，TUI 不得重复插入。
+TUI 使用声明式 preset，因此 bundle 会禁用 base 中由 preset 拥有的工具、prompt、
+compaction 和 delegation 行，保留共享 backend；随后插入 `agent-preset-registry`，并以
+四个独立 patch 层声明 `standard`、`ptc`、`minimal` 与 `cordis`。这样每个 Agent 只获得
+所选 composition 的服务身份，同时 session projection 仍记录并恢复 preset id。
+
+除此之外，TUI patch 覆盖 `agent-loop`、`system-prompt`、`llm-deepseek`、`fs-sandbox`
+与 `tools`，并插入 session-reference、tmux-context、TUI、title、hooks 和可选 WeChat 行。
+storage 与 session projection 继续由 base 唯一提供，bundle 不重复挂载。
 
 可选的独立 `dsh-web-access` bundle 安装在 `tui` Profile 后层：禁用 base 的
 `web-search-deepseek` 与 `tool-web`，保留 `web` seam 并把 search/fetch provider 固定为
@@ -447,7 +460,7 @@ tool-todo、tool-goal、tool-ralph、tool-str-replace-editor、repeat-tool-remin
 
 ---
 
-## 6. 会话持久化/投影/查询（0.1.6-alpha.2 合约）
+## 6. 会话持久化/投影/查询（0.1.7-rc.2 合约）
 
 ### 6.1 SessionPersistence（`ctx.sessionPersistence`，抽象服务）
 
@@ -614,27 +627,37 @@ isUserInvocable(skill): boolean;   // TUI `/skill:` 列表过滤
 
 ```ts
 type JobStatus = 'running' | 'stopping' | 'completed' | 'killed' | 'failed';
-interface JobSnapshot {
-  id: JobId; kind: JobKind; label: string; outputLimitBytes?: number;
-  ownerSession?: SessionId; status: JobStatus; detail?: string;
-  startedAt: number; finishedAt?: number; reported: boolean;
+interface JobView {
+  readonly id: JobId; readonly kind: string; readonly label: string;
+  readonly owner?: SessionId; readonly outputLimitBytes?: number;
+  readonly status: JobStatus; readonly progress?: string; readonly detail?: string;
+  readonly startedAt: number; readonly finishedAt?: number;
+  readonly output: { readonly total: number; readonly earliest: number; readonly spillPaths?: readonly string[] };
+}
+interface JobSpec {
+  kind: JobKind; label: string; owner?: SessionId; outputLimitBytes?: number;
+  output?: readonly JobOutputSource[];
+  run(job: JobHandle): JobHooks;
 }
 abstract class JobRegistry extends Service {
-  start(spec: JobStart): JobId;
-  list(caller?: Agent): JobSnapshot[];
-  get(id: JobId, caller?: Agent): JobSnapshot;
-  read(id: JobId, caller?: Agent): JobRead;
-  kill(id: JobId, caller?: Agent, reason?: string): 'requested' | 'already-finished';
-  wait(id: JobId, timeoutMs: number, caller?: Agent, signal?: AbortSignal): Promise<JobSnapshot>;
-  onJobDone(listener: JobDoneListener): () => void;
-  onJobsChanged(listener: JobsChangedListener): () => void;
+  readonly events: JobEvents; // subscribe({ owner } | { owners: 'scope'|'all' }, listener)
+  start(spec: JobSpec): JobId;
+  list(caller?: SessionId): JobView[];
+  get(id: JobId, caller?: SessionId): JobView;
+  read(id: JobId, caller?: SessionId): JobRead;
+  readAt(id: JobId, from: number, caller?: SessionId): JobOutputRead;
+  kill(id: JobId, caller?: SessionId, reason?: string): 'requested' | 'already-finished';
+  wait(id: JobId, timeoutMs: number, caller?: SessionId, signal?: AbortSignal): Promise<JobView>;
+  remove(id: JobId, caller?: SessionId): void;
   attachController(name: string): () => void;
 }
 ```
 
-- `list/get/read/kill/wait` 以 caller 的 session id 做 owner 访问隔离；任务 id 可预测，不能把 id 当授权边界。
-- `list(agent)` 返回该 agent 拥有的任务及无 owner 的任务快照；每次返回新对象，不是 live registry state。
-- `onJobsChanged(owner)` 是 owner 粒度的全量重读通知；`owner === undefined` 表示无 owner 任务发生变化，对所有 caller 可见。
+- `list/get/read/readAt/kill/wait/remove` 以 `SessionId` 做 owner 访问隔离；任务 id 可预测，不能把 id 当授权边界。
+- `list(sessionId)` 返回该 session 拥有的任务及无 owner 任务的全新 `JobView`，不是 live registry state。
+- `events.subscribe()` 同步发送 `registered | progress | stopping | settled | removed | output`；TUI 用 `{ owners: 'all' }` 订阅，再按前台 `SessionId` 刷新面板。
+- `read()` 消费模型 cursor；观察者使用绝对 byte offset 的 `readAt()`，两者读取同一 bounded output ring 且互不推进。
+- `attachController()` 注册 effect-scoped controller；没有覆盖 owner scope 的 controller 时，`start()` 拒绝任务。
 - 活跃状态为 `running | stopping`；终态为 `completed | killed | failed`。
 - dsh base 已挂载 `dsh-jobs-local` 和模型侧 `dsh-tool-jobs`；TUI 只消费 registry，不复制任务生命周期。
 
@@ -693,7 +716,7 @@ interface Config {
 
 ## 9. TUI 接线备忘（从合约到实现）
 
-1. **启动**：`tui-startup` 行 inject `cmdlineArgs`，commander 解析 `--resume`/`--session`/`--help` → 提供 `tuiStartup`（sessionId / resumeSessionId）；agent-loop 行 `inject: [tuiStartup]` 惰性读。
+1. **启动**：`tui-startup` 解析 `--resume`/`--session`/`--help` 并提供会话 identity；TUI 通过 `ctx.agents.create/resume({ setup })` 在 publication 前 await 选中的 agent preset，preset 就绪后才启动输入。
 2. **取 agent**：`ctx.agents.get(sessionId)` → `Agent`；`agent.session.events` 为不可变日志快照。
 3. **渲染主通道**：`session/event` 持久事件 + `agent/assistant-stream` 实时输出 + `agent.session.snapshotEvents()` 历史重放；`tool/ptc-dispatch-start` / `tool/ptc-dispatch` 按 parent/sub-call id 组成递归工具卡，与 Web 的 `subCalls` contract 一致。
 4. **状态**：`agent/status` 事件 → 编辑框边框/指示器；`agent.session.header.cwd` 为 workspace。
@@ -704,6 +727,6 @@ interface Config {
 9. **命令**：`ctx.commands.execute(agent, line, attachments, signal)`；普通命令传 `[]`，带图片标记的草稿仅在命令声明 `input.attachments` 时传入带 `type: 'image'` 的 base64 wire batch，否则前端拒绝提交并保留草稿。`/help` 列表用 `ctx.commands.list(agent)`。
 10. **模型选择**：`installModelSelection(agent.ctx, selectionRef)` + `agentDefaultModel.currentSelection()/saveSelection()`。
 11. **投影消费**：`ctx.sessionProjections.snapshot(session)` 或 `sessionProjectionCache.cachedSnapshot(header)`（列表零 I/O）。
-12. **Profile 与 TUI 代码重载（暂时关闭）**：当前 bundle 将 `tui-reload` Profile 行标记为 disabled，TUI 不注入 `tuiReload`，也不提供 `/reload` 命令、帮助项或补全项。`src/reload.ts`、包导出与专项测试仅作为未启用的调查 WIP 保留，不能视为运行时能力；恢复前必须先解决 `docs/RELOAD_ISSUE.md` 记录的 generation 与私有 HMR 边界，并重新完成 Loader 与 ConPTY 验收。
-13. **后台任务导航**：主界面的子 Agent 列表来自 `ctx.agents.list()`，按 `session.header.parentSession === foreground.id` 且 `origin === 'subagent'` 过滤；展示身份只读取每个子会话 `seedLength` 之后的自有 `subagent/descriptor`，避免把 fork seed 中祖先 descriptor 误认成当前子 Agent。面板同时通过 `ctx.jobs.list(foreground)` 展示该 Agent 的 running/stopping Jobs，并由 `ctx.jobs.onJobsChanged` 刷新；Jobs 不再重复占用 footer。空编辑器中按下方向键展开 Background tasks 列表，按左方向键返回主 Agent 视图，不改变 foreground Agent，也不向子 Agent 或 Job 投递输入。
+12. **Profile 与 TUI 代码重载**：`tui-reload` 旧行保持 disabled；当前 `/reload` 由 `omdsh` 监督进程实现 generation respawn，写入 handoff 后以退出码 75 退出，并用 `--resume`/`--session` 启动下一代。直接 `dsh --profile tui` 无监督器时明确拒绝，不终止进程。
+13. **后台任务导航**：主界面的子 Agent 列表来自 `ctx.agents.list()`，按 `session.header.parentSession === foreground.id` 且 `origin === 'subagent'` 过滤；面板调用 `ctx.jobs.list(foreground.id)` 展示该 session 的 Jobs，并订阅 `ctx.jobs.events.subscribe({ owners: 'all' }, ...)` 后按事件 owner 刷新。空编辑器中按下方向键展开 Background tasks，按左方向键返回主 Agent 视图；Jobs 不重复占用 footer。
 14. **本地 shell 输入**：行首 `!` 由 TUI 截获，正文交给当前平台已组合的 `ctx.shell` executor；完成前显示 pending shell 卡，完成后把 shell、命令、stdout、stderr、退出码、超时/中止/sandbox 摘要编码为可逆文本，创建 `source.kind = 'user'` 的消息并 `agent.followup()`，从而既持久渲染在 transcript，也作为下一独立回合的用户输入进入模型上下文。

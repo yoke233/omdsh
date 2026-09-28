@@ -4,7 +4,7 @@
 
 本仓库是 DeepSeek Harness（dsh）的独立 OMP 风格 TUI profile bundle。终端呈现、输入、主题、设置和微信桥属于本仓库；agent、模型、工具、会话持久化与沙箱由 dsh harness 提供，不要在这里复制或修改上游实现。
 
-`docs/contracts.md` 是当前 dsh `0.1.1-rc.2` 合约的唯一真相源。涉及 `@deepseek-ai/*` 接口、事件顺序、Profile 组合或依赖版本时，先完整阅读并更新该文件，再同步源码、`cordis.patch.yml`、依赖和测试。
+`docs/contracts.md` 是当前 dsh `0.1.7-rc.2` 合约的唯一真相源。涉及 `@deepseek-ai/*` 接口、事件顺序、Profile 组合或依赖版本时，先完整阅读并更新该文件，再同步源码、`cordis.patch.yml`、依赖和测试。
 
 ## 目录与生成物
 
@@ -17,7 +17,7 @@
 
 ## 环境与命令
 
-使用 Node.js `^22.19.0` 或 `>=24.0.0`、pnpm 11；仓库锁定的包管理器版本为 pnpm `11.7.0`。
+使用 Node.js `^22.19.0` 或 `>=24.0.0`、pnpm 11；仓库锁定的包管理器版本为 pnpm `11.25.0`。
 
 ```powershell
 pnpm install --frozen-lockfile

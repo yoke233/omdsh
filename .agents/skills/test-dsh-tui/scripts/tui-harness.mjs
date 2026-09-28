@@ -105,6 +105,7 @@ export class TuiHarness {
     const childEnv = {
       ...process.env,
       DSH_HOME: this.config.dshHome,
+      DSH_REAL: this.config.dshExecutable,
       OMDSH_NO_BOOTSTRAP: '1',
     }
     if (!this.config.allowModelRequests) {
@@ -366,13 +367,8 @@ export class TuiHarness {
   }
 
   resolveDshLaunch() {
-    if (process.platform !== 'win32') return { command: 'dsh', prefix: [] }
-    const located = spawnSync('where.exe', ['dsh.cmd'], { encoding: 'utf8' })
-    for (const commandPath of located.stdout.split(/\r?\n/).filter(Boolean)) {
-      const bin = join(dirname(commandPath.trim()), 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
-      if (existsSync(bin)) return { command: process.execPath, prefix: [bin] }
-    }
-    throw new Error(`Cannot resolve the dsh Node entry point from PATH.\n${located.stderr}`)
+    const bin = join(dirname(this.config.dshExecutable), '..', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
+    return { command: process.execPath, prefix: [bin] }
   }
 
   processTable() {

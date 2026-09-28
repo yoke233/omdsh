@@ -86,9 +86,10 @@ describe('transcript components respect the render width', () => {
       step: 1,
       message: {
         id: 'm1' as never,
-        role: 'user',
-        content: [{ type: 'tool-result', toolCallId: 'c1' as never, content: [{ type: 'text', text: longText }] }],
-        source: { kind: 'tool' },
+        role: 'tool',
+        toolCallId: 'c1' as never,
+        content: [{ type: 'text', text: longText }],
+        source: { kind: 'tool', callId: 'c1' as never },
       },
     } as never)
     for (const width of widths) {
@@ -111,7 +112,9 @@ describe('transcript components respect the render width', () => {
     assert.ok(expandedReplRows.slice(2).every(row => visibleWidth(row) <= 30))
     pending.updateResult({
       message: {
-        content: [{ content: [{ type: 'text', text: 'line one\nline two' }], isError: false }],
+        toolCallId: 'c1' as never,
+        content: [{ type: 'text', text: 'line one\nline two' }],
+        isError: false,
       },
     } as never)
     const collapsed = render(pending, 48)
@@ -142,7 +145,9 @@ describe('transcript components respect the render width', () => {
     const interrupted = new ToolCardComponent('read', '{}', 6, themed)
     interrupted.updateResult({
       message: {
-        content: [{ content: [{ type: 'text', text: 'aborted' }], isError: true }],
+        toolCallId: 'c1' as never,
+        content: [{ type: 'text', text: 'aborted' }],
+        isError: true,
       },
       error: { name: 'HarnessError', code: 'ABORTED' },
     } as never)
@@ -262,7 +267,9 @@ describe('transcript components respect the render width', () => {
     const card = new ToolCardComponent('pwsh', JSON.stringify({ command: longCommand }), 6, palette)
     card.updateResult({
       message: {
-        content: [{ content: [{ type: 'text', text: 'done' }], isError: false }],
+        toolCallId: 'c1' as never,
+        content: [{ type: 'text', text: 'done' }],
+        isError: false,
       },
     } as never)
     card.setVisibility('expanded')
@@ -301,7 +308,9 @@ describe('transcript components respect the render width', () => {
     }), 6, palette)
     card.updateResult({
       message: {
-        content: [{ content: [{ type: 'text', text: 'done' }], isError: false }],
+        toolCallId: 'c1' as never,
+        content: [{ type: 'text', text: 'done' }],
+        isError: false,
       },
     } as never)
     card.setVisibility('expanded')
@@ -445,7 +454,9 @@ describe('transcript components respect the render width', () => {
 
     card.updateResult({
       message: {
-        content: [{ content: [{ type: 'text', text: 'done' }], isError: false }],
+        toolCallId: 'c1' as never,
+        content: [{ type: 'text', text: 'done' }],
+        isError: false,
       },
     } as never)
     card.setVisibility('expanded')
@@ -459,7 +470,9 @@ describe('transcript components respect the render width', () => {
     const powershell = new ToolCardComponent('powershell', '{}', 6, palette)
     powershell.updateResult({
       message: {
-        content: [{ content: [{ type: 'text', text: 'first\r\nsecond\rthird' }], isError: false }],
+        toolCallId: 'c1' as never,
+        content: [{ type: 'text', text: 'first\r\nsecond\rthird' }],
+        isError: false,
       },
     } as never)
     powershell.setVisibility('expanded')
@@ -474,13 +487,12 @@ describe('transcript components respect the render width', () => {
     const unsafe = new ToolCardComponent('grep', '{"path":"lib"}', 10, palette)
     unsafe.updateResult({
       message: {
+        toolCallId: 'c1' as never,
         content: [{
-          content: [{
-            type: 'text',
-            text: 'Line 1839:\tbefore\x1b[48;5;240m highlighted \x1b[0mafter\nmove\x1b[2J\x1b[Hhome\nmarker\x1b_pi:c\x07cursor\ncharset\x1b(0A\nutf8-csi\u009b31mred\u009b0m',
-          }],
-          isError: false,
+          type: 'text',
+          text: 'Line 1839:\tbefore\x1b[48;5;240m highlighted \x1b[0mafter\nmove\x1b[2J\x1b[Hhome\nmarker\x1b_pi:c\x07cursor\ncharset\x1b(0A\nutf8-csi\u009b31mred\u009b0m',
         }],
+        isError: false,
       },
     } as never)
     unsafe.setVisibility('expanded')

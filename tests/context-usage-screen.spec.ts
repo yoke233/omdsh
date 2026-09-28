@@ -19,7 +19,7 @@ describe('context usage snapshot', () => {
       event(1, 'user/message', { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: 'hello' }] }, { surfaceOp: 'append' }),
       event(2, 'assistant/message', { message: { content: [{ type: 'reasoning', text: 'think' }, { type: 'text', text: 'answer' }, { type: 'tool-call', id: 'c1', name: 'edit', arguments: '{}' }] } }, { surfaceOp: 'append' }),
       event(3, 'tool/call', { callId: 'c1', name: 'edit', arguments: '{}' }),
-      event(4, 'tool/result', { message: { source: { kind: 'tool', callId: 'c1' }, content: [{ type: 'tool-result', toolCallId: 'c1', content: [{ type: 'text', text: 'ok' }] }] } }, { surfaceOp: 'append' }),
+      event(4, 'tool/result', { message: { id: 'm1', role: 'tool', source: { kind: 'tool', callId: 'c1' }, toolCallId: 'c1', content: [{ type: 'text', text: 'ok' }] } }, { surfaceOp: 'append' }),
     ]
     const snapshot = buildContextUsageSnapshot(events, [{ seq: 1, tokens: 100 }, { seq: 2, tokens: 300 }, { seq: 4, tokens: 200 }], 1_000, 8_000, 'deepseek-chat')
     assert.equal(snapshot.categories.reduce((sum, category) => sum + category.tokens, 0), 1_000)

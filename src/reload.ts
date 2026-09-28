@@ -2,7 +2,7 @@ import { fileURLToPath } from 'node:url'
 import { basename, dirname, join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { Context, Service } from '@deepseek-ai/cordis'
-import type {} from '@deepseek-ai/cordis-plugin-hmr'
+import type {} from '@deepseek-ai/dsh-hmr'
 import {
   composeEntries,
   loadOptionalPatches,
@@ -40,7 +40,7 @@ export type ReloadableModuleLoader = {
   resolveSync(parentURL: string, request: { specifier: string; attributes: ImportAttributes }): { url: string }
 }
 
-/** Runtime HMR hooks used to force-refresh an already loaded entry module. */
+/** Runtime HMR hooks used for module and profile refresh. */
 export interface ReloadableHmr {
   readonly stashed: Set<string>
   partialReload(): Promise<void>
@@ -277,6 +277,13 @@ export class TuiReload extends Service {
     }
     let watcherFiberUid: number | undefined
     let watcherClaim: Promise<void> | undefined
+    let watcherDisposers: Array<() => Promise<void>> = []
+    const disposeReloadWatchers = async (): Promise<void> => {
+      const current = watcherDisposers
+      watcherDisposers = []
+      await Promise.all(current.map(dispose => dispose()))
+    }
+    ctx.effect(() => disposeReloadWatchers)
     const ensureReloadWatchers = (): Promise<void> => {
       const currentFiber = ctx.reflect._getImpl('hmr', false)?.fiber
       if (currentFiber === undefined) {
@@ -285,6 +292,7 @@ export class TuiReload extends Service {
       if (currentFiber.uid === watcherFiberUid) return Promise.resolve()
       if (watcherClaim !== undefined) return watcherClaim
       const claim = (async () => {
+        await disposeReloadWatchers()
         // The launcher-installed config watchers close over the bundle list
         // captured at process start. Restarting HMR retires those watchers;
         // replacements below always call this runtime's fresh composition.
@@ -297,8 +305,10 @@ export class TuiReload extends Service {
         const refresh = async (): Promise<void> => {
           await this.runtime.reload()
         }
-        await hmr.registerConfig(loaded.profile.patchPath, refresh)
-        await hmr.registerConfig(homePatchPath, refresh)
+        watcherDisposers = await Promise.all([
+          hmr.watchConfig(loaded.profile.patchPath, refresh),
+          hmr.watchConfig(homePatchPath, refresh),
+        ])
         watcherFiberUid = activeFiber.uid
       })()
       watcherClaim = claim

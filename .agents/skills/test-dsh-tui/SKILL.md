@@ -9,7 +9,7 @@ Test at the narrowest seam that proves the behavior, then use the packaged ConPT
 
 ## Safety boundary
 
-Every live run uses a uniquely named `DSH_HOME`; the supplied runner enforces this and removes successful runs. Built-in fixtures perform no model request and write only inside that temporary root. The runner isolates DSH state, not the operating system: custom scenarios are trusted code and can access the repository, network, and parent process environment.
+Every live run uses a uniquely named `DSH_HOME` and a private DSH installation matching the version on PATH; the supplied runner enforces this and removes successful runs. Isolating only `DSH_HOME` is insufficient: DSH resolves bundle declarations from its installation before the profile, so a globally installed `omdsh` can otherwise shadow the tarball under test. Built-in fixtures perform no model request and write only inside that temporary root. The runner isolates DSH state, not the operating system: custom scenarios are trusted code and can access the repository, network, and parent process environment.
 
 On PowerShell, name paths `$dshHome`; `$HOME` is a case-insensitive, read-only built-in. Every run installs tarballs into an isolated Profile. Source mode packs the current worktree; package mode accepts an existing `.tgz` and never treats a source directory as an installable package. A directory install becomes `link:`, which does not install bundle dependencies into the Profile root where Cordis resolves them.
 
@@ -73,6 +73,8 @@ node .agents/skills/test-dsh-tui/scripts/run-live-test.mjs --scenario reload-res
 ```
 
 The `reload` and `reload-code` scenarios are retained only as historical fixtures of the abandoned in-process reload investigation (they assert a constant PID, the opposite of the shipped respawn contract). Do not treat them as current acceptance tests.
+
+Run `--scenario settings-migration` after changing legacy settings import, native settings writes, or volatile TUI configuration. It checks the migrated prompt on the current screen, switches between `minimal` and `standard`, persists a theme change, and reads the migrated title model in `/settings` without replacing the DSH process.
 
 Run the network-free, controlled-model scenario for running-turn input, immediate preview, and steer delivery:
 

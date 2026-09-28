@@ -1,28 +1,18 @@
 # @yoke233/omdsh bundle patch (declared by `dsh.bundle.patch`): applied over the
 # dsh-base layer when this package appears in a profile's `dsh.profile.bundles`.
-# Overrides base rows by id and inserts the terminal front door plus its
-# projection/storage support rows.
+# Overrides base rows by id, moves agent-visible capabilities behind presets,
+# and inserts the terminal front door plus its host services.
 #
 # The tui-startup provider parses the launcher's immutable cmdline snapshot
-# (--resume/--session/--help) and provides tuiStartup; agent-loop and the TUI
-# row both inject it, so the agent is created before the TUI mounts.
+# (--resume/--session/--help). The TUI creates or resumes the initial agent and
+# awaits its selected preset setup before starting terminal input.
 
 - id: session-title-llm
   name: '@deepseek-ai/dsh-session-title-first-prompt-llm'
   disabled: true
 
 - id: agent-loop
-  inject: [tuiStartup, agentDefaultModel]
-  config:
-    agents:
-      - id: main
-        sessionId: !!js ctx.tuiStartup.sessionId
-        resumeSessionId: !!js ctx.tuiStartup.resumeSessionId
-        # Resolve the saved user selection when each process starts instead of
-        # pinning every fresh session to the bundle's composition defaults.
-        provider: !!js ctx.agentDefaultModel.currentSelection().provider
-        model: !!js ctx.agentDefaultModel.currentSelection().model
-        cwd: !!js process.cwd()
+  config: {}
 
 - id: system-prompt
   config:
@@ -39,15 +29,6 @@
     thinking: enabled
     reasoningEffort: max
 
-# The local OpenAI-compatible gateway rejects compaction requests that replay
-# assistant tool-call messages without `reasoning_content`. Route compaction
-# summarization through the DeepSeek adapter/model, which the gateway accepts
-# for these replay shapes.
-- id: compaction-basic
-  config:
-    summarizationProvider: deepseek-official
-    summarizationModel: deepseek-v4-flash
-
 - id: fs-sandbox
   config:
     cwd: !!js process.cwd()
@@ -55,6 +36,81 @@
 - id: tools
   config:
     mode: native
+
+# Agent-visible tools and prompt contributors live inside the selected preset.
+# Keep the registries and shared backends on the host plane, but disable the
+# base rows that would otherwise leak duplicate services into preset scopes.
+- id: tool-plugin-manager
+  disabled: true
+
+- id: tool-bash
+  disabled: true
+
+- id: tool-pwsh
+  disabled: true
+
+- id: tool-jobs
+  disabled: true
+
+- id: tool-fs
+  disabled: true
+
+- id: tool-fs-search
+  disabled: true
+
+- id: skill-filesystem
+  disabled: true
+
+- id: tool-skill
+  disabled: true
+
+- id: command-goal
+  disabled: true
+
+- id: tool-goal
+  disabled: true
+
+- id: plan-mode
+  disabled: true
+
+- id: compaction-basic
+  disabled: true
+
+- id: command-compact
+  disabled: true
+
+- id: tool-result-pruner
+  disabled: true
+
+- id: tool-subagent-control
+  disabled: true
+
+- id: tool-subagent-list-agents
+  disabled: true
+
+- id: tool-subagent
+  disabled: true
+
+- id: tool-subagent-fork
+  disabled: true
+
+- id: workflow-ptc
+  disabled: true
+
+- id: tool-workflow
+  disabled: true
+
+- id: tool-ralph
+  disabled: true
+
+- id: agent-instructions
+  disabled: true
+
+- id: tool-todo
+  disabled: true
+
+- id: tool-web
+  disabled: true
 
 - insert:
     - id: llm-tool-call-sanitizer
@@ -68,10 +124,14 @@
       config:
         refreshIntervalMs: 900000
 
-    # Preset roster: exposes ctx.agentPresets so the TUI can compose the agent
-    # from the official roster and switch a blank session to any healthy preset.
-    - id: agent-presets
-      name: '@deepseek-ai/dsh-agent-presets'
+    # Host-owned selection policy sampled when a preset mounts delegation tools.
+    - id: subagent-model-selection-settings
+      name: '@deepseek-ai/dsh-tool-subagent/model-selection-settings'
+
+    # Preset definitions are separate bundle patch layers so profile overrides
+    # can address each declaration by row id.
+    - id: agent-preset-registry
+      name: '@deepseek-ai/dsh-agent-preset-registry'
       config:
         default: standard
 
@@ -115,8 +175,6 @@
         defaultReasoningEffort: max
         title: dsh
 
-    - id: tool-ask-user
-      name: '@deepseek-ai/dsh-tool-ask-user'
 
     # Claude Code hooks bridge, mounted twice for a layered config: a
     # project-local row and a user-level row (each configPath is process-level

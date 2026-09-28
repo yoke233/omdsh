@@ -47,10 +47,9 @@ import type {} from '@deepseek-ai/dsh-session-query'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
 import type {} from '@deepseek-ai/dsh-skill'
 import type {} from '@deepseek-ai/dsh-session-reference'
-import type {} from '@deepseek-ai/dsh-settings'
+import type { SettingsPathOp } from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-session-projection'
 import type {} from '@deepseek-ai/dsh-tool-todo'
-import { PERMISSION_SETTINGS_NAMESPACE } from '@deepseek-ai/dsh-permission-presets'
 import type {} from '@deepseek-ai/dsh-permission-presets'
 import type {} from '@deepseek-ai/dsh-goal'
 import type {} from '@deepseek-ai/dsh-compaction'
@@ -63,7 +62,7 @@ import type {} from '@deepseek-ai/dsh-hook-protocol'
 import type { ToolCallView, ToolResult, ToolResultView } from '@deepseek-ai/dsh-tools'
 // Declaration merges: `ctx.agentPresets`, its `agentPreset` projection, and
 // the `agent-preset/selected` session event.
-import type {} from '@deepseek-ai/dsh-agent-presets'
+import type {} from '@deepseek-ai/dsh-agent-preset-registry'
 import {
   DEFAULT_LEFT_PROMPT,
   DEFAULT_RIGHT_PROMPT,
@@ -116,7 +115,10 @@ import { redrawThemePreview } from './theme-preview-render.ts'
 import {
   SESSION_TITLE_SETTINGS_NAMESPACE,
   TUI_SETTINGS_NAMESPACE,
-  TuiSettingsSchema,
+  migrateLegacySettingsDocument,
+  settingsValue,
+  type SettingsSnapshot,
+  type TuiSettingsPatch,
 } from './settings.ts'
 import {
   ContextCardComponent,
@@ -220,6 +222,7 @@ const RESUME_PICKER_LIMIT = 50
 const RESUME_TITLES_TIMEOUT_MS = 5_000
 /** Context fallback while exact model metadata is unavailable. */
 const DEFAULT_CONTEXT_WINDOW = 1_000_000
+const PERMISSION_SETTINGS_NAMESPACE = 'permission'
 
 /** Optional localized labels for official presets; roster ids remain authoritative. */
 const MODE_LABEL_KEYS: Readonly<Record<string, MessageKey>> = {
@@ -320,6 +323,7 @@ export class Tui extends Service {
 
   constructor(ctx: Context, config: Config) {
     super(ctx, 'tui')
+    const legacySettingsMigration = migrateLegacySettingsDocument(ctx.profileContext)
 
     const startup: TuiStartup = ctx.tuiStartup
     const sessionId = startup.sessionId ?? startup.resumeSessionId
@@ -331,16 +335,41 @@ export class Tui extends Service {
     const t: Translator = createTranslator(resolved.locale)
     ctx.effect(() => registerJobsCommand(ctx, t))
     const truecolor = resolved.theme.truecolor || detectTruecolor()
-    // Runtime theme state; `/theme` and `/settings` re-paint in place.
+    // Capture settings once per UI/catalog refresh. `describe()` walks and
+    // serializes every profile entry, so individual field reads share this view.
     const settings = ctx.settings
-    const tuiSettings = settings?.register(TUI_SETTINGS_NAMESPACE, TuiSettingsSchema, {
-      base: {
-        themeMode: resolved.theme.mode,
-        themeDark: resolved.theme.dark,
-        themeLight: resolved.theme.light,
-        themeSelected: resolved.theme.selected,
-      },
-    })
+    let settingsSnapshot: SettingsSnapshot = []
+    const refreshSettingsSnapshot = (): void => { settingsSnapshot = settings.describe() }
+    const readSettings = <T>(namespace: string): T | undefined => settingsValue<T>(settingsSnapshot, namespace)
+    const updateSettings = async (namespace: string, patch: object): Promise<void> => {
+      await settings.update(namespace, patch)
+      refreshSettingsSnapshot()
+    }
+    const mutateSettings = async (
+      namespace: string,
+      ops: readonly SettingsPathOp[],
+    ): Promise<void> => {
+      await settings.mutate(namespace, ops)
+      refreshSettingsSnapshot()
+    }
+    const applyLegacySettingsMigration = async (): Promise<void> => {
+      if (
+        legacySettingsMigration.tui === undefined
+        && legacySettingsMigration.sessionTitle === undefined
+        && legacySettingsMigration.agentPresetRegistry === undefined
+      ) return
+      await ctx.root.loader.await()
+      if (legacySettingsMigration.tui !== undefined) {
+        await settings.update(TUI_SETTINGS_NAMESPACE, legacySettingsMigration.tui)
+      }
+      if (legacySettingsMigration.sessionTitle !== undefined) {
+        await settings.update(SESSION_TITLE_SETTINGS_NAMESPACE, legacySettingsMigration.sessionTitle)
+      }
+      if (legacySettingsMigration.agentPresetRegistry !== undefined) {
+        await settings.update('agent-preset-registry', legacySettingsMigration.agentPresetRegistry)
+      }
+      syncLiveTuiConfig()
+    }
     interface ProviderModelProfile {
       id: string
       name?: string
@@ -373,8 +402,11 @@ export class Tui extends Service {
         ? ctx.llm.listConfigurableProviders()
         : []
     )
-    const readConfiguredProvider = (entry: LlmConfigurableProvider): ConfiguredProviderProfile | undefined => {
-      const value = readPath(settings?.get(entry.settingsNs), entry.settingsPath)
+    const readConfiguredProvider = (
+      entry: LlmConfigurableProvider,
+      snapshot = settingsSnapshot,
+    ): ConfiguredProviderProfile | undefined => {
+      const value = readPath(settingsValue(snapshot, entry.settingsNs), entry.settingsPath)
       const record = asRecord(value)
       if (record === undefined) return undefined
       const profile: ConfiguredProviderProfile = {}
@@ -399,10 +431,13 @@ export class Tui extends Service {
       }
       return profile
     }
-    const configuredProviderProfiles = (): Readonly<Record<string, ConfiguredProviderProfile>> => {
+    const configuredProviderProfiles = (
+      entries = configurableProviderList(),
+      snapshot = settingsSnapshot,
+    ): Readonly<Record<string, ConfiguredProviderProfile>> => {
       const profiles: Record<string, ConfiguredProviderProfile> = {}
-      for (const entry of configurableProviderList()) {
-        const profile = readConfiguredProvider(entry)
+      for (const entry of entries) {
+        const profile = readConfiguredProvider(entry, snapshot)
         if (profile !== undefined) profiles[entry.provider] = profile
       }
       return profiles
@@ -412,35 +447,39 @@ export class Tui extends Service {
     // declared namespace/path and never invents a provider-owned namespace.
     // Runtime theme state; `/theme` and `/settings` repaint in place.
 
-    const migrateLegacyThemeName = (name: string | undefined): Partial<{ themeMode: ThemeMode; themeDark: string; themeLight: string; themeSelected: string }> | undefined => {
-      if (name === undefined) return undefined
-      const concrete = findTheme(name)
-      if (concrete !== undefined) {
-        return { themeMode: 'selected', themeDark: resolved.theme.dark, themeLight: resolved.theme.light, themeSelected: name }
+    let themeCustom: ThemeCustom | undefined = resolved.theme.custom
+    let themeMode: ThemeMode = resolved.theme.mode
+    let themeDark = resolved.theme.dark
+    let themeLight = resolved.theme.light
+    let themeSelected = resolved.theme.selected
+    // Runtime presentation state; `/settings` persists these through the
+    // profile-backed TUI entry.
+    let showReasoning = resolved.showReasoning
+    let maxToolOutputLines = resolved.maxToolOutputLines
+    let leftPrompt = resolved.theme.leftPrompt
+    let rightPrompt = resolved.theme.rightPrompt
+    let keyTools = resolved.keyTools
+    let keyReasoning = resolved.keyReasoning
+    const updateTuiSettings = async (patch: TuiSettingsPatch): Promise<void> => {
+      const theme: Record<string, unknown> = {}
+      if (patch.themeMode !== undefined) theme.mode = patch.themeMode
+      if (patch.themeDark !== undefined) theme.dark = patch.themeDark
+      if (patch.themeLight !== undefined) theme.light = patch.themeLight
+      if (patch.themeSelected !== undefined) theme.selected = patch.themeSelected
+      if (patch.themeCustom !== undefined) theme.custom = patch.themeCustom
+      if (patch.leftPrompt !== undefined) theme.leftPrompt = patch.leftPrompt
+      if (patch.rightPrompt !== undefined) theme.rightPrompt = patch.rightPrompt
+      const entryPatch: Record<string, unknown> = {}
+      if (Object.keys(theme).length > 0) entryPatch.theme = theme
+      if (patch.keyTools !== undefined) entryPatch.keyTools = patch.keyTools
+      if (patch.keyReasoning !== undefined) entryPatch.keyReasoning = patch.keyReasoning
+      if (patch.showReasoning !== undefined) entryPatch.showReasoning = patch.showReasoning
+      if (patch.maxToolOutputLines !== undefined) entryPatch.maxToolOutputLines = patch.maxToolOutputLines
+      if (Object.keys(entryPatch).length > 0) await updateSettings(TUI_SETTINGS_NAMESPACE, entryPatch)
+      if ('themeCustom' in patch && patch.themeCustom === undefined) {
+        await mutateSettings(TUI_SETTINGS_NAMESPACE, [{ op: 'unset', path: ['theme', 'custom'] }])
       }
-      const dark = findTheme(`dark-${name}`)
-      const light = findTheme(`light-${name}`)
-      if (dark !== undefined && light !== undefined) {
-        return { themeMode: 'dynamic', themeDark: dark.id, themeLight: light.id, themeSelected: resolved.theme.selected }
-      }
-
-      return undefined
     }
-    const persistedTheme = tuiSettings?.get()
-    let themeCustom: ThemeCustom | undefined = persistedTheme?.themeCustom ?? resolved.theme.custom
-    const legacyThemeMigration = migrateLegacyThemeName(persistedTheme?.themeName)
-    let themeMode: ThemeMode = persistedTheme?.themeMode ?? legacyThemeMigration?.themeMode ?? resolved.theme.mode
-    let themeDark = persistedTheme?.themeDark ?? legacyThemeMigration?.themeDark ?? resolved.theme.dark
-    let themeLight = persistedTheme?.themeLight ?? legacyThemeMigration?.themeLight ?? resolved.theme.light
-    let themeSelected = persistedTheme?.themeSelected ?? legacyThemeMigration?.themeSelected ?? resolved.theme.selected
-    // Runtime presentation state; `/settings` can persist these through the
-    // same TUI settings namespace.
-    let showReasoning = persistedTheme?.showReasoning ?? resolved.showReasoning
-    let maxToolOutputLines = persistedTheme?.maxToolOutputLines ?? resolved.maxToolOutputLines
-    let leftPrompt = persistedTheme?.leftPrompt ?? resolved.theme.leftPrompt
-    let rightPrompt = persistedTheme?.rightPrompt ?? resolved.theme.rightPrompt
-    let keyTools = persistedTheme?.keyTools ?? 'ctrl+o'
-    let keyReasoning = persistedTheme?.keyReasoning ?? 'ctrl+r'
     const resolveDefaultMode = (): string => ctx.agentPresets?.defaultId ?? resolved.mode
     let uiMode: string = resolveDefaultMode()
     // Roster display names (id → name); refreshed from ctx.agentPresets.list().
@@ -512,8 +551,8 @@ export class Tui extends Service {
     })
     let imagePasteBusy = false
     let imagePasteDisposed = false
-    let leftTemplate = parseTuiPromptTemplate(displayInlineText(persistedTheme?.leftPrompt ?? resolved.theme.leftPrompt))
-    let rightTemplate = parseTuiPromptTemplate(displayInlineText(persistedTheme?.rightPrompt ?? resolved.theme.rightPrompt))
+    let leftTemplate = parseTuiPromptTemplate(displayInlineText(leftPrompt))
+    let rightTemplate = parseTuiPromptTemplate(displayInlineText(rightPrompt))
     const promptValue = (valueName: string): string | undefined => ctx.tuiPrompt.get(valueName)
     let statusLine = new StatusLineComponent(rightTemplate, promptValue, palette)
     const todoPanel = new TodoPanelComponent(palette)
@@ -530,7 +569,7 @@ export class Tui extends Service {
         return
       }
       subagentPanel.set(liveChildSubagents(ctx.agents.list(), owner.id))
-      const jobs = orderJobs(ctx.jobs.list(owner))
+      const jobs = orderJobs(ctx.jobs.list(owner.id))
       subagentPanel.setJobs(jobs.map(job => ({
         id: String(job.id),
         kind: String(job.kind),
@@ -563,6 +602,12 @@ export class Tui extends Service {
     )
     const inputBorder = new InputBorderComponent(palette)
     let footer = new ComposerFooterComponent(leftTemplate, promptValue, palette)
+    const syncPromptComponents = (): void => {
+      leftTemplate = parseTuiPromptTemplate(displayInlineText(leftPrompt))
+      rightTemplate = parseTuiPromptTemplate(displayInlineText(rightPrompt))
+      statusLine = new StatusLineComponent(rightTemplate, promptValue, palette)
+      footer = new ComposerFooterComponent(leftTemplate, promptValue, palette)
+    }
     let composerMounted = false
     let inlineQuestionDepth = 0
     const askInline = async (
@@ -613,9 +658,10 @@ export class Tui extends Service {
     }
     rebuildChrome()
     terminal.setTitle(resolved.title)
-    ctx.effect(() => ctx.jobs.onJobsChanged((owner) => {
+    ctx.effect(() => ctx.jobs.events.subscribe({ owners: 'all' }, (event) => {
       if (agent === undefined) return
-      if (owner === undefined || owner === agent) {
+      const owner = event.type === 'output' ? event.owner : event.job.owner
+      if (owner === undefined || owner === agent.id) {
         refreshSubagentPanel()
         ui.requestRender()
       }
@@ -656,9 +702,14 @@ export class Tui extends Service {
       ui.requestRender()
     }
 
-    // Transient notices are intentionally suppressed. Durable transcript
-    // messages, dialogs, and footer state remain visible at their own seams.
-    const appendNotice = (_text: string, _kind: 'info' | 'warning' | 'error'): void => {}
+    // Notices must remain visible after command completion; otherwise rejected
+    // commands such as unsupervised `/reload` appear to accept input silently.
+    const appendNotice = (text: string, kind: 'info' | 'warning' | 'error'): void => {
+      if (text === '') return
+      const color = kind === 'error' ? palette.error : kind === 'warning' ? palette.warning : palette.text
+      chat.addChild(new StaticCardComponent([color(displayText(text))], palette))
+      ui.requestRender()
+    }
 
     const warnIfFullAccess = (target: Agent): void => {
       if (ctx.permissionPresets.current(target.session) === FULL_ACCESS_REGISTRY_NAME) {
@@ -904,9 +955,15 @@ export class Tui extends Service {
         return undefined
       }
     }
-    const presentResult = (name: string, args: unknown, result: ToolResult): ToolResultView | undefined => {
+    type ReadonlyToolResult = Readonly<Omit<ToolResult, 'content'>> & {
+      readonly content: readonly ContentBlock[]
+    }
+    const presentResult = (name: string, args: unknown, result: ReadonlyToolResult): ToolResultView | undefined => {
       try {
-        return (ctx.tools.get(name, agent) ?? ctx.tools.get(name))?.presentResult?.(args, result)
+        const presenter = (ctx.tools.get(name, agent) ?? ctx.tools.get(name))?.presentResult as
+          | ((args: unknown, result: ReadonlyToolResult) => ToolResultView | undefined)
+          | undefined
+        return presenter?.(args, result)
       } catch {
         return undefined
       }
@@ -976,7 +1033,7 @@ export class Tui extends Service {
           if (source.kind === 'user' && immediateUserMessages.delete(event.data.id)) break
           chat.addChild(new Spacer(1))
           if (source.kind !== 'user') {
-            const label = source.kind === 'plugin' ? source.plugin : source.kind
+            const label = source.kind
             const card = registerVisibilityCard(
               allToolCards,
               new ContextCardComponent(label, text, maxToolOutputLines, palette),
@@ -1035,15 +1092,15 @@ export class Tui extends Service {
           break
         }
         case 'tool/result': {
-          const callId = event.data.message.content[0]?.toolCallId
-          const card = callId === undefined ? undefined : toolCards.get(callId)
-          if (callId !== undefined && card !== undefined) {
-            const block = event.data.message.content[0]
+          const message = event.data.message
+          const callId = message.toolCallId
+          const card = toolCards.get(callId)
+          if (card !== undefined) {
             const args = toolArguments.get(callId)
             const name = toolNames.get(callId) ?? 'unknown'
             card.updateResult(event.data, presentResult(name, args, {
-              content: block.content,
-              isError: block.isError === true,
+              content: message.content,
+              isError: message.isError === true,
               ...(event.data.meta === undefined ? {} : { meta: event.data.meta }),
             }))
           }
@@ -1277,6 +1334,31 @@ export class Tui extends Service {
         redrawThemePreview(terminal, ui)
       }
     }
+    const syncLiveTuiConfig = (): void => {
+      const next = resolveTuiConfig(config)
+      themeCustom = next.theme.custom
+      themeMode = next.theme.mode
+      themeDark = next.theme.dark
+      themeLight = next.theme.light
+      themeSelected = next.theme.selected
+      showReasoning = next.showReasoning
+      maxToolOutputLines = next.maxToolOutputLines
+      leftPrompt = next.theme.leftPrompt
+      rightPrompt = next.theme.rightPrompt
+      keyTools = next.keyTools
+      keyReasoning = next.keyReasoning
+      Object.assign(palette, createPalette(next.theme.color, currentScheme, truecolor, themeOverride()))
+      Object.assign(mdTheme, markdownTheme(palette))
+      syncPromptComponents()
+      rebuildChrome()
+      if (agent !== undefined) rebuildTranscript()
+      setStatus(agent?.status ?? 'idle')
+      refreshSettingsSnapshot()
+      ui.requestRender()
+    }
+    ctx.effect(() => ctx.on('settings/document-updated', (namespace) => {
+      if (namespace === TUI_SETTINGS_NAMESPACE) syncLiveTuiConfig()
+    }))
     const previewTheme = (id: string): void => {
       if (previewThemeId === id || findTheme(id) === undefined) return
       previewThemeId = id
@@ -1780,8 +1862,7 @@ export class Tui extends Service {
           return
         }
         try {
-          if (live === undefined) await presets.mount(current.ctx, target)
-          else await presets.recompose(current.ctx, target)
+          await presets.select(current, target)
           uiMode = target
           updateStatusValues()
           ui.requestRender()
@@ -1792,10 +1873,6 @@ export class Tui extends Service {
         return
       }
       if (line === '/settings' || line.startsWith('/settings ')) {
-        if (settings === undefined || tuiSettings === undefined) {
-          appendNotice(t('noticeSettingsUnavailable'), 'warning')
-          return
-        }
         try {
           type SettingsView =
             | 'main'
@@ -1855,7 +1932,9 @@ export class Tui extends Service {
 
           let providerCatalog: ProviderCatalogEntry[] = []
           let modelCatalog: Array<{ provider: string; model: string }> = []
-          const refreshProviderModelCatalog = async (): Promise<void> => {
+          let configuredProfiles: Readonly<Record<string, ConfiguredProviderProfile>> = {}
+          const refreshProviderModelCatalog = async (readLatest = true): Promise<void> => {
+            if (readLatest) refreshSettingsSnapshot()
             const providers = new Map<string, ProviderCatalogEntry>()
             const configurableProviders = configurableProviderList()
             const configurableIds = new Set(configurableProviders.map(entry => entry.provider))
@@ -1867,7 +1946,7 @@ export class Tui extends Service {
                 providers.set(entry.id, { id: entry.id, name: entry.name, source: 'registered' })
               }
             }
-            const profiles = configuredProviderProfiles()
+            const profiles = configuredProviderProfiles(configurableProviders, settingsSnapshot)
             for (const entry of configurableProviders) {
               const existing = providers.get(entry.provider)
               const profile = profiles[entry.provider]
@@ -1911,13 +1990,13 @@ export class Tui extends Service {
             await Promise.all(modelLoaders)
             const defaultSelection = ctx.agentDefaultModel.currentSelection()
             addModel(defaultSelection.provider, defaultSelection.model)
-            const titleSettings = settings.get(SESSION_TITLE_SETTINGS_NAMESPACE) as {
-              provider?: string
-              model?: string
-            } | undefined
+            const titleSettings = readSettings<{ provider?: string; model?: string }>(
+              SESSION_TITLE_SETTINGS_NAMESPACE,
+            )
             if (titleSettings?.provider !== undefined && titleSettings.model !== undefined) {
               addModel(titleSettings.provider, titleSettings.model)
             }
+            configuredProfiles = profiles
             modelCatalog = [...models.values()]
           }
 
@@ -1942,10 +2021,9 @@ export class Tui extends Service {
 
           const modelCurrentValue = (provider: string, model: string): string => {
             const defaultSelection = ctx.agentDefaultModel.currentSelection()
-            const titleSettings = settings.get(SESSION_TITLE_SETTINGS_NAMESPACE) as {
-              provider?: string
-              model?: string
-            } | undefined
+            const titleSettings = readSettings<{ provider?: string; model?: string }>(
+              SESSION_TITLE_SETTINGS_NAMESPACE,
+            )
             const marks: string[] = []
             if (defaultSelection.provider === provider && defaultSelection.model === model) marks.push('★')
             if (titleSettings?.provider === provider && titleSettings.model === model) marks.push('T')
@@ -1954,10 +2032,9 @@ export class Tui extends Service {
           }
 
           const buildModelItems = (): SettingsItem[] => {
-            const titleSettings = settings.get(SESSION_TITLE_SETTINGS_NAMESPACE) as {
-              provider?: string
-              model?: string
-            } | undefined
+            const titleSettings = readSettings<{ provider?: string; model?: string }>(
+              SESSION_TITLE_SETTINGS_NAMESPACE,
+            )
             const titleProvider = titleSettings?.provider ?? current.options.provider ?? 'auto'
             const titleModel = titleSettings?.model ?? current.options.model ?? 'auto'
             const defaultSelection = ctx.agentDefaultModel.currentSelection()
@@ -1977,21 +2054,18 @@ export class Tui extends Service {
             return roles.length === 0 ? t('settingsThemeCustomNone') : roles.join(', ')
           }
           const buildSettingsTabs = (): SettingsTab[] => {
-            const agentLoopSettings = settings.get('agent-loop') as {
-              maxParallelToolCalls?: number
-            } | undefined
+            const agentLoopSettings = readSettings<{ maxParallelToolCalls?: number }>('agent-loop')
             const maxParallelToolCalls = agentLoopSettings?.maxParallelToolCalls ?? 10
             const defaultSelection = ctx.agentDefaultModel.currentSelection()
-            const titleSettings = settings.get(SESSION_TITLE_SETTINGS_NAMESPACE) as {
-              provider?: string
-              model?: string
-            } | undefined
+            const titleSettings = readSettings<{ provider?: string; model?: string }>(
+              SESSION_TITLE_SETTINGS_NAMESPACE,
+            )
             const titleProvider = titleSettings?.provider ?? current.options.provider ?? 'auto'
             const titleModel = titleSettings?.model ?? current.options.model ?? 'auto'
             const defaultPermission = displayPermissionName(ctx.permissionPresets.defaultPreset)
-            const defaultPreset = (settings.get('agent-presets') as {
-              default?: string
-            } | undefined)?.default
+            const defaultPreset = readSettings<{ selectedDefault?: string }>(
+              'agent-preset-registry',
+            )?.selectedDefault
             const defaultMode = defaultPreset ?? ctx.agentPresets?.defaultId ?? resolved.mode
             const wechatConfig = getWechatConfig()
             return [
@@ -2095,7 +2169,7 @@ export class Tui extends Service {
                 value: entry.id,
                 label: entry.name,
               })),
-              ...Object.entries(configuredProviderProfiles())
+              ...Object.entries(configuredProfiles)
                 .filter(([id]) => !registeredProviderIds.has(id))
                 .map(([id, profile]) => ({
                   value: id,
@@ -2106,7 +2180,7 @@ export class Tui extends Service {
           }
 
           const screen = new SettingsScreen(
-            buildSettingsTabs()[0]?.items ?? [],
+            [],
             t('settingsTitle'),
             palette,
             t,
@@ -2158,7 +2232,7 @@ export class Tui extends Service {
           const providerPickerItems = (selected: string | undefined): SelectItem[] => {
             const known = new Set([
               ...(typeof ctx.llm.listProviders === 'function' ? ctx.llm.listProviders() : []).map(entry => entry.id),
-              ...Object.keys(configuredProviderProfiles()),
+              ...Object.keys(configuredProfiles),
             ])
             const items = providerItems()
             if (selected !== undefined && selected !== CUSTOM_PROVIDER && !known.has(selected)) {
@@ -2264,7 +2338,7 @@ export class Tui extends Service {
             if (draft.baseURL.trim() === '') unset('baseURL')
             else set('baseURL', draft.baseURL.trim())
             if (apiKeyEnv !== undefined) set('apiKeyEnv', apiKeyEnv)
-            await settings.mutate(target.ns, ops)
+            await mutateSettings(target.ns, ops)
             appendNotice(t('noticeProviderSaved'), 'info')
           }
           const openProviderForm = async (providerId?: string): Promise<void> => {
@@ -2273,7 +2347,7 @@ export class Tui extends Service {
               return
             }
             const existing = providerId === undefined ? undefined : providerCatalog.find(candidate => candidate.id === providerId)
-            const profile = providerId === undefined ? undefined : configuredProviderProfiles()[providerId]
+            const profile = providerId === undefined ? undefined : configuredProfiles[providerId]
 
             let templateId = ''
             let templateName = ''
@@ -2390,7 +2464,7 @@ export class Tui extends Service {
             )
             if (submitted === undefined) return
             await saveProvider(providerId, submitted)
-            await refreshProviderModelCatalog()
+            await refreshProviderModelCatalog(false)
             if (view === 'main') showMain()
           }
 
@@ -2441,9 +2515,9 @@ export class Tui extends Service {
                     String(maxToolOutputLines),
                   )
                 } else if (item.value === 'title-model') {
-                  const titleSettings = settings.get(SESSION_TITLE_SETTINGS_NAMESPACE) as {
-                    provider?: string
-                  } | undefined
+                  const titleSettings = readSettings<{ provider?: string }>(
+                    SESSION_TITLE_SETTINGS_NAMESPACE,
+                  )
                   showItems(
                     'title-provider',
                     providerPickerItems(titleSettings?.provider ?? current.options.provider),
@@ -2457,9 +2531,9 @@ export class Tui extends Service {
                     return
                   }
                   const presetsList = (await presets.list()).filter(preset => preset.broken === undefined)
-                  const defaultMode = (settings.get('agent-presets') as {
-                    default?: string
-                  } | undefined)?.default ?? presets.defaultId
+                  const defaultMode = readSettings<{ selectedDefault?: string }>(
+                    'agent-preset-registry',
+                  )?.selectedDefault ?? presets.defaultId
                   showItems(
                     'default-mode',
                     presetsList.map(preset => ({
@@ -2471,9 +2545,9 @@ export class Tui extends Service {
                     defaultMode,
                   )
                 } else if (item.value === 'max-parallel-tool-calls') {
-                  const current = (settings.get('agent-loop') as {
-                    maxParallelToolCalls?: number
-                  } | undefined)?.maxParallelToolCalls ?? 10
+                  const current = readSettings<{ maxParallelToolCalls?: number }>(
+                    'agent-loop',
+                  )?.maxParallelToolCalls ?? 10
                   showItems(
                     'max-parallel-tool-calls',
                     parallelToolCallOptions.map(value => ({ value: String(value), label: String(value) })),
@@ -2492,16 +2566,10 @@ export class Tui extends Service {
                   const next = trimmed === ''
                     ? editLeft ? DEFAULT_LEFT_PROMPT : DEFAULT_RIGHT_PROMPT
                     : trimmed
-                  if (editLeft) {
-                    leftPrompt = next
-                    leftTemplate = parseTuiPromptTemplate(displayInlineText(next))
-                    statusLine = new StatusLineComponent(rightTemplate, promptValue, palette)
-                  } else {
-                    rightPrompt = next
-                    rightTemplate = parseTuiPromptTemplate(displayInlineText(next))
-                    footer = new ComposerFooterComponent(leftTemplate, promptValue, palette)
-                  }
-                  await tuiSettings.update({ leftPrompt, rightPrompt })
+                  if (editLeft) leftPrompt = next
+                  else rightPrompt = next
+                  syncPromptComponents()
+                  await updateTuiSettings({ leftPrompt, rightPrompt })
                   rebuildChrome()
                   appendNotice(t('noticePromptSet', { name: editLeft ? t('settingsLeftPrompt') : t('settingsRightPrompt') }), 'info')
                   if (selectedVersion === viewVersion && view === selectedView) showMain()
@@ -2518,7 +2586,7 @@ export class Tui extends Service {
                   if (trimmed !== '') {
                     if (editTools) keyTools = trimmed
                     else keyReasoning = trimmed
-                    await tuiSettings.update({ keyTools, keyReasoning })
+                    await updateTuiSettings({ keyTools, keyReasoning })
                   }
                   appendNotice(t('noticeKeybindingSet', { name: editTools ? t('settingsKeyTools') : t('settingsKeyReasoning') }), 'info')
                   if (selectedVersion === viewVersion && view === selectedView) showMain()
@@ -2626,7 +2694,7 @@ export class Tui extends Service {
                     })
                   }
                   if (submitted.saveTitle) {
-                    await settings.update(SESSION_TITLE_SETTINGS_NAMESPACE, {
+                    await updateSettings(SESSION_TITLE_SETTINGS_NAMESPACE, {
                       provider: submitted.provider,
                       model: submitted.model,
                     })
@@ -2688,7 +2756,7 @@ export class Tui extends Service {
 
               if (selectedView === 'theme-mode') {
                 themeMode = item.value === 'dynamic' ? 'dynamic' : 'selected'
-                await tuiSettings.update({ themeMode, themeDark, themeLight, themeSelected })
+                await updateTuiSettings({ themeMode, themeDark, themeLight, themeSelected })
                 Object.assign(palette, createPalette(resolved.theme.color, currentScheme, truecolor, themeOverride()))
                 Object.assign(mdTheme, markdownTheme(palette))
                 rebuildTranscript()
@@ -2703,7 +2771,7 @@ export class Tui extends Service {
                 if (selectedView === 'theme-dark') themeDark = item.value
                 if (selectedView === 'theme-light') themeLight = item.value
                 if (selectedView === 'theme-selected') themeSelected = item.value
-                await tuiSettings.update({ themeMode, themeDark, themeLight, themeSelected })
+                await updateTuiSettings({ themeMode, themeDark, themeLight, themeSelected })
                 Object.assign(palette, createPalette(resolved.theme.color, currentScheme, truecolor, themeOverride()))
                 Object.assign(mdTheme, markdownTheme(palette))
                 rebuildTranscript()
@@ -2738,7 +2806,7 @@ export class Tui extends Service {
                   next[role] = [parts[0]!, parts[1]!, parts[2]!]
                 }
                 themeCustom = Object.keys(next).length === 0 ? undefined : next
-                await tuiSettings.update({ themeMode, themeDark, themeLight, themeSelected, themeCustom })
+                await updateTuiSettings({ themeMode, themeDark, themeLight, themeSelected, themeCustom })
                 Object.assign(palette, createPalette(resolved.theme.color, currentScheme, truecolor, themeOverride()))
                 Object.assign(mdTheme, markdownTheme(palette))
                 rebuildTranscript()
@@ -2750,7 +2818,7 @@ export class Tui extends Service {
               }
               if (selectedView === 'show-reasoning') {
                 const next = item.value === 'true'
-                await tuiSettings.update({ showReasoning: next })
+                await updateTuiSettings({ showReasoning: next })
                 showReasoning = next
                 appendNotice(t('noticeSettingsSaved'), 'info')
                 if (selectedVersion === viewVersion && view === selectedView) showMain()
@@ -2759,7 +2827,7 @@ export class Tui extends Service {
 
               if (selectedView === 'tool-output-lines') {
                 const next = Number(item.value)
-                await tuiSettings.update({ maxToolOutputLines: next })
+                await updateTuiSettings({ maxToolOutputLines: next })
                 maxToolOutputLines = next
                 rebuildTranscript()
                 appendNotice(t('noticeSettingsSaved'), 'info')
@@ -2768,7 +2836,7 @@ export class Tui extends Service {
               }
 
               if (selectedView === 'default-mode') {
-                await settings.update('agent-presets', { default: item.value })
+                await updateSettings('agent-preset-registry', { selectedDefault: item.value })
                 appendNotice(t('noticeDefaultModeSet', { mode: modeLabel(t, item.value, presetNames) }), 'info')
                 if (selectedVersion === viewVersion && view === selectedView) showMain()
                 return
@@ -2776,7 +2844,7 @@ export class Tui extends Service {
 
               if (selectedView === 'max-parallel-tool-calls') {
                 const next = Number(item.value)
-                await settings.update('agent-loop', { maxParallelToolCalls: next })
+                await updateSettings('agent-loop', { maxParallelToolCalls: next })
                 appendNotice(t('noticeSettingsSaved'), 'info')
                 if (selectedVersion === viewVersion && view === selectedView) showMain()
                 return
@@ -2810,10 +2878,9 @@ export class Tui extends Service {
               }
 
               if (selectedView === 'title-provider') {
-                const titleSettings = settings.get(SESSION_TITLE_SETTINGS_NAMESPACE) as {
-                  provider?: string
-                  model?: string
-                } | undefined
+                const titleSettings = readSettings<{ provider?: string; model?: string }>(
+                  SESSION_TITLE_SETTINGS_NAMESPACE,
+                )
                 const savedProvider = titleSettings?.provider ?? current.options.provider
                 const provider = item.value === CUSTOM_PROVIDER
                   ? await promptCustom(t('modelProvider'))
@@ -2837,10 +2904,9 @@ export class Tui extends Service {
 
               if (selectedView === 'title-model') {
                 if (pendingProvider === undefined) return
-                const titleSettings = settings.get(SESSION_TITLE_SETTINGS_NAMESPACE) as {
-                  provider?: string
-                  model?: string
-                } | undefined
+                const titleSettings = readSettings<{ provider?: string; model?: string }>(
+                  SESSION_TITLE_SETTINGS_NAMESPACE,
+                )
                 const savedModel = titleSettings?.provider === pendingProvider ? titleSettings.model : undefined
                 const model = item.value === CUSTOM_MODEL
                   ? await promptCustom(t('modelTitle', { provider: pendingProvider }))
@@ -2848,7 +2914,7 @@ export class Tui extends Service {
                     ? await promptCustom(t('settingsEditCustomModel'), savedModel)
                     : item.value
                 if (model === undefined) return
-                await settings.update(SESSION_TITLE_SETTINGS_NAMESPACE, { provider: pendingProvider, model })
+                await updateSettings(SESSION_TITLE_SETTINGS_NAMESPACE, { provider: pendingProvider, model })
                 const sessionTitle = ctx.get('sessionTitle')
                 if (sessionTitle !== undefined) void sessionTitle.refresh(current.session).catch(() => undefined)
                 appendNotice(t('noticeTitleModelSet', { provider: pendingProvider, model }), 'info')
@@ -2858,7 +2924,7 @@ export class Tui extends Service {
 
               if (selectedView === 'default-permission') {
                 const registryName = registryPermissionName(item.value)
-                await settings.update(PERMISSION_SETTINGS_NAMESPACE, { defaultPreset: registryName })
+                await updateSettings(PERMISSION_SETTINGS_NAMESPACE, { defaultPreset: registryName })
                 appendNotice(t('noticeDefaultPermissionSet', { permission: displayPermissionName(registryName) }), 'info')
                 if (selectedVersion === viewVersion && view === selectedView) showMain()
                 return
@@ -2973,7 +3039,7 @@ export class Tui extends Service {
                     if (selectedVersion === viewVersion && view === selectedView) showMain()
                   }
                 } else if (item.value === 'set-title') {
-                  await settings.update(SESSION_TITLE_SETTINGS_NAMESPACE, {
+                  await updateSettings(SESSION_TITLE_SETTINGS_NAMESPACE, {
                     provider: pendingModel.provider,
                     model: pendingModel.model,
                   })
@@ -3030,13 +3096,11 @@ export class Tui extends Service {
         const arg = line.slice('/theme'.length).trim()
         const applyTheme = async (): Promise<void> => {
           previewThemeId = undefined
-          if (tuiSettings !== undefined) {
-            try {
-              await tuiSettings.update({ themeMode, themeDark, themeLight, themeSelected })
-            } catch (error: unknown) {
-              appendNotice(t('noticeSettingsFailed', { error: errorChain(error) }), 'error')
-              return
-            }
+          try {
+            await updateTuiSettings({ themeMode, themeDark, themeLight, themeSelected })
+          } catch (error: unknown) {
+            appendNotice(t('noticeSettingsFailed', { error: errorChain(error) }), 'error')
+            return
           }
           repaintTheme(undefined, true)
         }
@@ -3217,7 +3281,7 @@ export class Tui extends Service {
           stdoutMaxBytes: 64 * 1024,
           signal: controller.signal,
         })
-        result = shellCommandResult(shell, command, await ctx.shell.run(spec))
+        result = shellCommandResult(shell, command, await (await ctx.shell.execute(spec)).result())
       } catch (error: unknown) {
         result = shellInfrastructureFailure(shell, command, error)
       } finally {
@@ -4301,7 +4365,6 @@ export class Tui extends Service {
       updateTitle()
       setStatus(liveAgent.status)
       reportOrcaSession(liveAgent)
-      void composeAgentPreset(liveAgent).then(() => { handles.refreshCommands?.() })
       void (async () => {
         const presets = ctx.agentPresets
         if (presets === undefined) return
@@ -4322,26 +4385,70 @@ export class Tui extends Service {
 
     }
 
-    const readyAgent = ctx.agents.get(sessionId)
-    if (readyAgent !== undefined) {
-      mount(readyAgent)
-    } else {
-      const offCreated = ctx.on('agent/created', ({ agent: candidate }) => {
-        if (candidate.id === sessionId) {
-          offCreated()
-          mount(candidate)
+    const startupController = new AbortController()
+    const prepareInitialAgent = async (): Promise<{ agent: Agent; handle?: AgentHandle }> => {
+      await applyLegacySettingsMigration()
+      const presets = ctx.agentPresets
+      if (presets === undefined) throw new Error('tui: agent preset registry is unavailable')
+
+      const existing = ctx.agents.get(sessionId)
+      if (existing !== undefined) {
+        if (presets.composedPreset(existing.ctx) === undefined) {
+          const recorded = ctx.sessionProjections.stateOf(existing.session, 'agentPreset') ?? resolveDefaultMode()
+          await presets.mount(existing.ctx, recorded)
         }
+        return { agent: existing }
+      }
+
+      const selection = ctx.agentDefaultModel.currentSelection()
+      if (startup.resumeSessionId !== undefined) {
+        const handle = await ctx.agents.resume({
+          resumeSessionId: startup.resumeSessionId,
+          agentOptions: {
+            provider: selection.provider,
+            model: selection.model,
+          },
+          signal: startupController.signal,
+          setup: async (agentCtx, resumed) => {
+            const recorded = ctx.sessionProjections.stateOf(resumed.session, 'agentPreset') ?? resolveDefaultMode()
+            await presets.mount(agentCtx, recorded)
+          },
+        })
+        return { agent: handle.agent, handle }
+      }
+
+      const preset = resolveDefaultMode()
+      const handle = await ctx.agents.create({
+        sessionId,
+        meta: {
+          cwd: process.cwd(),
+          agentPreset: preset,
+        },
+        agentOptions: {
+          provider: selection.provider,
+          model: selection.model,
+        },
+        signal: startupController.signal,
+        setup: async (agentCtx) => { await presets.mount(agentCtx, preset) },
       })
-      const timeout = setTimeout(() => {
-        if (mounted) return
-        offCreated()
-        terminal.write(`\r\ntui: session "${sessionId}" never became live (timed out).\r\n`)
-        ctx.appExit?.(1)
-      }, AGENT_READY_TIMEOUT_MS)
-      ctx.effect(() => () => {
-        clearTimeout(timeout)
-      })
+      return { agent: handle.agent, handle }
     }
+    const startupTimer = setTimeout(() => {
+      startupController.abort(new DOMException('Initial agent startup timed out', 'AbortError'))
+    }, AGENT_READY_TIMEOUT_MS)
+    void prepareInitialAgent().then(({ agent: readyAgent, handle }) => {
+      clearTimeout(startupTimer)
+      activeHandle = handle
+      mount(readyAgent)
+    }).catch((error: unknown) => {
+      clearTimeout(startupTimer)
+      terminal.write(`\r\ntui: failed to initialize session "${sessionId}": ${errorChain(error)}\r\n`)
+      ctx.appExit?.(1)
+    })
+    ctx.effect(() => () => {
+      clearTimeout(startupTimer)
+      startupController.abort()
+    })
 
     ctx.effect(() => () => {
       setTuiForegroundControl(undefined)

@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 
@@ -88,6 +88,7 @@ function run(command, args, { cwd, env = process.env, logPath, inherit = false }
     if (!inherit && logPath !== undefined) process.stderr.write(readFileSync(logPath, 'utf8'))
     throw new Error(`${command} exited with code ${String(result.status)}.`)
   }
+  return result
 }
 
 function newestPackage(directory) {
@@ -109,6 +110,8 @@ const dshHome = join(testRoot, 'dsh-home')
 const artifacts = join(testRoot, 'artifacts')
 const harnessRoot = join(testRoot, 'harness')
 mkdirSync(dshHome, { recursive: true })
+const hostRoot = join(testRoot, 'host')
+mkdirSync(hostRoot, { recursive: true })
 mkdirSync(artifacts, { recursive: true })
 mkdirSync(harnessRoot, { recursive: true })
 let success = false
@@ -126,6 +129,19 @@ try {
   }
 
   const isolatedEnv = { ...process.env, DSH_HOME: dshHome }
+  const dshVersion = run('dsh', ['--version'], { cwd: projectRoot }).stdout.trim()
+  writeFileSync(join(hostRoot, 'package.json'), '{"private":true}')
+  run('pnpm', [
+    'add', `@deepseek-ai/dsh@${dshVersion}`,
+    '--allow-build=@deepseek-ai/dsh-subprocess-local',
+    '--allow-build=node-pty', '--allow-build=koffi', '--allow-build=protobufjs',
+    '--allow-build=@google/genai',
+  ], { cwd: hostRoot, logPath: join(artifacts, 'install-host.log') })
+  const hostBin = join(hostRoot, 'node_modules', '.bin')
+  const dshExecutable = join(hostBin, process.platform === 'win32' ? 'dsh.cmd' : 'dsh')
+  commandPaths.set('dsh', dshExecutable)
+  const pathKey = Object.keys(isolatedEnv).find(key => key.toLowerCase() === 'path') ?? 'PATH'
+  isolatedEnv[pathKey] = `${hostBin}${delimiter}${isolatedEnv[pathKey] ?? ''}`
   run('dsh', ['plugin', '--profile', 'tui', 'add', tuiPackage], {
     cwd: projectRoot,
     env: isolatedEnv,
@@ -159,6 +175,8 @@ try {
     packageSource,
     tuiPackage,
     extraBundles,
+    dshVersion,
+    dshExecutable,
   }, undefined, 2)}\n`)
 
   run(process.execPath, [join(scriptRoot, 'run-scenario.mjs'), configPath, scenarioPath], {

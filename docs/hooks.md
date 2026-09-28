@@ -1,6 +1,6 @@
 # Hooks（Claude Code 兼容）
 
-本 bundle 挂载了官方桥接插件 `@deepseek-ai/dsh-hooks-claude-code@0.1.2-alpha.2`：
+本 bundle 挂载了官方桥接插件 `@deepseek-ai/dsh-hooks-claude-code@0.1.7-rc.2`：
 在 harness 的拦截缝上运行 Claude Code 格式 hooks 配置中的 command-hook 子集。
 TUI 侧只在 hook 结果有信息量时渲染“Hook”卡片（阻断性决策
 `deny`/`block`/`stop`/`ask`、非零 exit code 或有 stderr 输出；与工具卡一样受
@@ -29,18 +29,18 @@ dsh 上会产生每次工具调用的子进程开销和未定义行为。确实�
 
 ## link: 开发安装注意
 
-桥随 dsh 0.1.2-alpha.2 宿主发布。通过 tarball /
+桥随 dsh 0.1.7-rc.2 宿主发布。通过 tarball /
 registry 安装本 bundle 时，桥作为 bundle 的 dependencies 会被正常安装；但 profile
 用 `link:` 指向本仓库开发时，pnpm 不会安装 link 包的依赖，需要把桥装成 profile
 的直接依赖：
 
 ```sh
 cd ~/.dsh/profiles/tui
-pnpm add @deepseek-ai/dsh-hooks-claude-code@0.1.2-alpha.2 @deepseek-ai/dsh-hook-protocol@0.1.2-alpha.2 --config.auto-install-peers=false
+pnpm add @deepseek-ai/dsh-hooks-claude-code@0.1.7-rc.2 @deepseek-ai/dsh-hook-protocol@0.1.7-rc.2 --config.auto-install-peers=false
 ```
 
-（`auto-install-peers=false` 是必需的：peer 由 dsh 宿主在运行时提供，而 registry
-上那些 peer 只有 `next` 预发布版，自动补装会解析失败。）
+（`auto-install-peers=false` 用于复用 dsh 0.1.7-rc.2 宿主提供的 peer，避免 profile
+再安装一套 Cordis 与 harness 服务身份。）
 
 ## 示例
 

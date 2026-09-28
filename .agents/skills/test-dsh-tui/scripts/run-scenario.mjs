@@ -43,6 +43,8 @@ const report = {
   packageSource: config.packageSource,
   tuiPackage: config.tuiPackage,
   extraBundles: config.extraBundles,
+  dshVersion: config.dshVersion,
+  dshExecutable: config.dshExecutable,
   ...result,
   artifactDirectory: config.keepArtifacts ? config.artifacts : null,
 }

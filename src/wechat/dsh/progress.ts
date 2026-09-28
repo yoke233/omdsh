@@ -7,7 +7,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, type ContextFormed } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import {
   getConfig,
@@ -24,6 +24,14 @@ import { loadAccounts } from '../core/state.ts'
 import { activePeers, cancelTyping } from '../core/bridge.ts'
 import { getActiveAgent } from './session.ts'
 import { sendToPeer } from './push.ts'
+
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    'dsh-wechat-ilink': {
+      kind: 'dsh-wechat-ilink'
+    } & ContextFormed
+  }
+}
 
 /** 注册进度汇报与结果推送钩子（WechatBridge 构造时调用一次）。 */
 export function registerProgressHooks(ctx: Context): void {
@@ -56,8 +64,7 @@ export function registerProgressHooks(ctx: Context): void {
                   '然后用 wechat_send 工具向微信用户简要汇报当前进度，之后继续原任务。',
               }],
               source: {
-                kind: 'plugin',
-                plugin: 'dsh-wechat-ilink',
+                kind: 'dsh-wechat-ilink',
                 form: 'notice',
                 summary: '微信进度汇报',
               },

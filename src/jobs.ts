@@ -1,7 +1,7 @@
 /** Background-job command formatting and registry integration. */
 
 import type { Context } from '@deepseek-ai/cordis'
-import type { JobSnapshot, JobStatus } from '@deepseek-ai/dsh-jobs'
+import type { JobStatus, JobView } from '@deepseek-ai/dsh-jobs'
 import { visibleWidth } from '@earendil-works/pi-tui'
 import type {} from '@deepseek-ai/dsh-commands'
 import type { Translator } from './i18n.ts'
@@ -31,7 +31,7 @@ export interface ActiveJobSummary {
 }
 
 /** Count jobs that have not reached a terminal state. */
-export function summarizeActiveJobs(jobs: readonly JobSnapshot[]): ActiveJobSummary {
+export function summarizeActiveJobs(jobs: readonly JobView[]): ActiveJobSummary {
   let count = 0
   let stopping = false
   for (const job of jobs) {
@@ -43,7 +43,7 @@ export function summarizeActiveJobs(jobs: readonly JobSnapshot[]): ActiveJobSumm
 }
 
 /** Live jobs first in start order, followed by the newest settled jobs. */
-export function orderJobs(jobs: readonly JobSnapshot[]): JobSnapshot[] {
+export function orderJobs(jobs: readonly JobView[]): JobView[] {
   return [...jobs].sort((left, right) => {
     const leftLive = LIVE_STATUSES.has(left.status)
     const rightLive = LIVE_STATUSES.has(right.status)
@@ -79,7 +79,7 @@ function padStartVisible(value: string, width: number): string {
 }
 
 /** Format the complete /jobs result for direct TUI presentation. */
-export function formatJobsList(jobs: readonly JobSnapshot[], t: Translator, now = Date.now()): string {
+export function formatJobsList(jobs: readonly JobView[], t: Translator, now = Date.now()): string {
   if (jobs.length === 0) return t('jobsEmpty')
 
   const ordered = orderJobs(jobs)
@@ -113,7 +113,7 @@ export function registerJobsCommand(ctx: Context, t: Translator): () => void {
       }
       return {
         kind: 'success',
-        text: formatJobsList(ctx.jobs.list(invocation.agent), t),
+        text: formatJobsList(ctx.jobs.list(invocation.agent.id), t),
       }
     },
   })

@@ -26,10 +26,10 @@ function estimate(value: unknown): number {
 
 function userCategory(message: Record<string, unknown>): ContextCategoryId {
   const source = message.source as Record<string, unknown> | undefined
-  const plugin = typeof source?.plugin === 'string' ? source.plugin.toLowerCase() : ''
+  const producer = typeof source?.kind === 'string' ? source.kind.toLowerCase() : ''
   const text = JSON.stringify(message.content ?? '').toLowerCase()
-  if (plugin.includes('skill') || text.includes('<skill') || text.includes('skill.md')) return 'skills'
-  if (text.includes('agents.md') || plugin.includes('instruction') || source?.form === 'instructions') return 'memory'
+  if (producer.includes('skill') || text.includes('<skill') || text.includes('skill.md')) return 'skills'
+  if (text.includes('agents.md') || producer.includes('instruction') || source?.form === 'instructions') return 'memory'
   return 'user-messages'
 }
 

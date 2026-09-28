@@ -757,9 +757,9 @@ export class ToolCardComponent implements Component {
     event: Extract<SessionEvent, { type: 'tool/result' }>['data'],
     view?: ToolResultView,
   ): void {
-    const result = event.message.content[0]
+    const message = event.message
     const interrupted = event.error?.code === 'ABORTED' || event.error?.code === 'ABORTED_BEFORE_DISPATCH'
-    this.setResult(result.content, interrupted ? 'interrupted' : result.isError === true ? 'failed' : 'completed', view)
+    this.setResult(message.content, interrupted ? 'interrupted' : message.isError === true ? 'failed' : 'completed', view)
   }
 
   /** Record one settled official Code Dispatch child result. */

@@ -109,7 +109,7 @@ describe('profile reload runtime', () => {
       [{ id: 'base', config: { title: 'custom' } }],
       [{ id: 'tools', config: { mode: 'native' } }],
     )
-    const launcher = [{ id: 'agent-presets', config: { roots: ['shipped'] } }]
+    const launcher = [{ id: 'agent-preset-registry', config: { default: 'standard' } }]
     const mounted = [...profileOwnedPatches(initial), ...launcher] as never[]
     const firstInsert = (mounted[0] as { insert: Array<{ config?: unknown }> }).insert[0]!
     firstInsert.config = { title: 'custom' }
@@ -244,7 +244,7 @@ describe('profile reload runtime', () => {
     const tuiPlugin = join(profileDir, 'tui.mjs')
     const probePlugin = join(modulesDir, 'probe.mjs')
     const require = createRequire(import.meta.url)
-    const hmrEntry = require.resolve('@deepseek-ai/cordis-plugin-hmr')
+    const hmrEntry = require.resolve('@deepseek-ai/dsh-hmr')
     const timerEntry = createRequire(hmrEntry).resolve('@deepseek-ai/cordis-plugin-timer')
     const reloadEntry = pathToFileURL(resolve('src/reload.ts')).href
     writeFileSync(rootConfig, '[]\n')

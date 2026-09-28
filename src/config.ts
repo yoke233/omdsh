@@ -4,6 +4,7 @@
  */
 
 import z from '@deepseek-ai/schemastery'
+import type { Volatile } from '@deepseek-ai/cordis'
 import type { Locale } from './i18n.ts'
 import type { ThemeMode } from './theme.ts'
 import { THEME_DATA } from './theme-data.ts'
@@ -51,6 +52,10 @@ export interface TuiConfig {
   /** Reasoning effort used before a session has a recorded request header. */
   defaultReasoningEffort?: string
   theme?: TuiThemeConfig
+  /** Keybinding for cycling tool-card visibility. */
+  keyTools?: string
+  /** Keybinding for toggling reasoning blocks. */
+  keyReasoning?: string
   /** Backend composition preset for blank sessions: any shipped or locally installed preset id. */
   mode?: string
   /** UI language; `zh-CN` is the default, `en` is fully supported. */
@@ -63,6 +68,8 @@ export const DEFAULT_LEFT_PROMPT = '${mode}${cwd}${git/worktree}'
 export const DEFAULT_RIGHT_PROMPT = '${model}${effort}${tokens}${context}${permission}'
 export const DEFAULT_INPUT_PROMPT = '${indicator}'
 export const DEFAULT_INPUT_PLACEHOLDER = ''
+export const DEFAULT_KEY_TOOLS = 'ctrl+o'
+export const DEFAULT_KEY_REASONING = 'ctrl+r'
 
 export const DEFAULT_THEME_MODE: ThemeMode = 'dynamic'
 export const DEFAULT_THEME_DARK = 'dark-catppuccin'
@@ -88,15 +95,26 @@ const themeSchema = z.object({
   inputPlaceholder: z.string().default(DEFAULT_INPUT_PLACEHOLDER),
 })
 
-/** Alias kept for consumers that name the plugin config `Config`. */
-export type Config = TuiConfig
+/** Loader output keeps settings-owned fields live without restarting the TUI. */
+export interface RuntimeTuiConfig extends Omit<TuiConfig, 'showReasoning' | 'maxToolOutputLines' | 'theme' | 'keyTools' | 'keyReasoning'> {
+  showReasoning: Volatile<boolean>
+  maxToolOutputLines: Volatile<number>
+  theme: Volatile<TuiThemeConfig | undefined>
+  keyTools: Volatile<string>
+  keyReasoning: Volatile<string>
+}
+
+/** Alias used by the Cordis plugin constructor. */
+export type Config = RuntimeTuiConfig
 
 /** Schemastery schema for presentation settings embedded by the bundle. */
-export const TuiConfigSchema: z<TuiConfig> = z.object({
-  showReasoning: z.boolean().default(true),
-  maxToolOutputLines: z.number().step(1).min(1).default(6),
+export const TuiConfigSchema: z<TuiConfig, RuntimeTuiConfig> = z.object({
+  showReasoning: z.boolean().default(true).volatile(),
+  maxToolOutputLines: z.number().step(1).min(1).default(6).volatile(),
   defaultReasoningEffort: z.string().default(DEFAULT_REASONING_EFFORT),
-  theme: themeSchema,
+  theme: themeSchema.volatile(),
+  keyTools: z.string().default(DEFAULT_KEY_TOOLS).volatile(),
+  keyReasoning: z.string().default(DEFAULT_KEY_REASONING).volatile(),
   mode: z.string().default(DEFAULT_MODE),
   locale: z.union([z.const('zh-CN'), z.const('en')]).default(DEFAULT_LOCALE),
   title: z.string().default('dsh'),
@@ -122,6 +140,8 @@ export interface ResolvedTuiConfig {
   showReasoning: boolean
   maxToolOutputLines: number
   defaultReasoningEffort: string
+  keyTools: string
+  keyReasoning: string
   theme: ResolvedTuiThemeConfig
   mode: string
   locale: Locale
@@ -152,9 +172,15 @@ function migrateLegacyThemeName(
   }
 }
 
+function currentValue<T>(value: T | Volatile<T> | undefined): T | undefined {
+  return value !== undefined && value !== null && typeof value === 'object' && 'get' in value
+    ? (value as Volatile<T>).get() as T
+    : value as T | undefined
+}
+
 /** Apply direct-call defaults after Loader schema validation has normally run. */
-export function resolveTuiConfig(config: TuiConfig | undefined): ResolvedTuiConfig {
-  const theme = config?.theme
+export function resolveTuiConfig(config: TuiConfig | RuntimeTuiConfig | undefined): ResolvedTuiConfig {
+  const theme = currentValue(config?.theme)
   const legacy = theme?.name !== undefined && theme?.mode === undefined
     ? migrateLegacyThemeName(theme.name)
     : undefined
@@ -179,8 +205,8 @@ export function resolveTuiConfig(config: TuiConfig | undefined): ResolvedTuiConf
   }
 
   return {
-    showReasoning: config?.showReasoning ?? true,
-    maxToolOutputLines: config?.maxToolOutputLines ?? 6,
+    showReasoning: currentValue(config?.showReasoning) ?? true,
+    maxToolOutputLines: currentValue(config?.maxToolOutputLines) ?? 6,
     defaultReasoningEffort: config?.defaultReasoningEffort ?? DEFAULT_REASONING_EFFORT,
     theme: {
       color: theme?.color ?? true,
@@ -195,6 +221,8 @@ export function resolveTuiConfig(config: TuiConfig | undefined): ResolvedTuiConf
       inputPrompt: theme?.inputPrompt ?? DEFAULT_INPUT_PROMPT,
       inputPlaceholder: theme?.inputPlaceholder ?? DEFAULT_INPUT_PLACEHOLDER,
     },
+    keyTools: currentValue(config?.keyTools) ?? DEFAULT_KEY_TOOLS,
+    keyReasoning: currentValue(config?.keyReasoning) ?? DEFAULT_KEY_REASONING,
     mode: config?.mode ?? DEFAULT_MODE,
     locale: config?.locale ?? DEFAULT_LOCALE,
     title: config?.title ?? 'dsh',

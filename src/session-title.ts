@@ -1,6 +1,6 @@
 /** Settings-aware first-prompt title provider for the terminal profile. */
 
-import type { Context } from '@deepseek-ai/cordis'
+import type { Context, Volatile } from '@deepseek-ai/cordis'
 import { SessionTitleProviderId } from '@deepseek-ai/dsh-session-title'
 import {
   generateSessionTitleWithLlm,
@@ -8,43 +8,43 @@ import {
   type SessionTitleLlmConfig,
 } from '@deepseek-ai/dsh-session-title-llm'
 import z from '@deepseek-ai/schemastery'
-import {
-  SESSION_TITLE_SETTINGS_NAMESPACE,
-  SessionTitleSettingsSchema,
-  type SessionTitleSettings,
-} from './settings.ts'
 
 export const name = 'session-title-first-prompt-llm'
-export const inject = ['sessionTitle', 'llm', 'sessions', 'settings']
+export const inject = ['sessionTitle', 'llm', 'sessions']
 
-export type Config = SessionTitleLlmConfig
+export interface Config extends Omit<SessionTitleLlmConfig, 'provider' | 'model'> {
+  provider: Volatile<string | undefined>
+  model: Volatile<string | undefined>
+}
 
-export const Config: z<Config> = z.object({
+export const Config: z<SessionTitleLlmConfig, Config> = z.object({
   targetWords: SessionTitleLlmConfigFields.targetWords,
   targetCjkCharacters: SessionTitleLlmConfigFields.targetCjkCharacters,
   maxInputBytes: SessionTitleLlmConfigFields.maxInputBytes,
   maxOutputTokens: SessionTitleLlmConfigFields.maxOutputTokens,
   timeoutMs: SessionTitleLlmConfigFields.timeoutMs,
-  provider: SessionTitleLlmConfigFields.provider,
-  model: SessionTitleLlmConfigFields.model,
+  provider: z.string().volatile(),
+  model: z.string().volatile(),
 })
 
-function configuredRoute(config: Config): Partial<SessionTitleSettings> {
+function currentConfig(config: Config): SessionTitleLlmConfig {
+  const provider = config.provider.get()
+  const model = config.model.get()
+  if ((provider === undefined) !== (model === undefined)) {
+    throw new Error('session-title settings require provider and model together')
+  }
   return {
-    ...config.provider === undefined ? {} : { provider: config.provider },
-    ...config.model === undefined ? {} : { model: config.model },
+    targetWords: config.targetWords,
+    targetCjkCharacters: config.targetCjkCharacters,
+    maxInputBytes: config.maxInputBytes,
+    maxOutputTokens: config.maxOutputTokens,
+    timeoutMs: config.timeoutMs,
+    ...(provider === undefined || model === undefined ? {} : { provider, model }),
   }
 }
 
 export function apply(ctx: Context, config: Config): void {
-  const scope = ctx.settings.register(SESSION_TITLE_SETTINGS_NAMESPACE, SessionTitleSettingsSchema, {
-    base: configuredRoute(config),
-    validate: (value) => {
-      if ((value.provider === undefined) !== (value.model === undefined)) {
-        throw new Error('session-title settings require provider and model together')
-      }
-    },
-  })
+  currentConfig(config)
   const providerId = SessionTitleProviderId(name)
   ctx.sessionTitle.register({
     id: providerId,
@@ -54,7 +54,7 @@ export function apply(ctx: Context, config: Config): void {
       if (first === undefined) throw new Error('first-prompt title provider requires one human message')
       return generateSessionTitleWithLlm(
         ctx,
-        { ...config, ...scope.get() },
+        currentConfig(config),
         request,
         [first],
         providerId,
